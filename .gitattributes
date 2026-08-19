@@ -1,0 +1,11 @@
+# Store and check out every text file with LF. Without this, core.autocrlf on a
+# Windows clone rewrites the whole tree to CRLF, and every stylua/selene run then
+# reports the entire file as changed.
+* text=auto eol=lf
+
+# Roblox binaries, in case one is ever committed deliberately.
+*.rbxl  binary
+*.rbxm  binary
+*.png   binary
+*.jpg   binary
+*.ogg   binary

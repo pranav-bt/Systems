@@ -1,0 +1,15 @@
+{
+	"name": "Placement",
+	"tree": {
+		"$className": "Folder",
+		"client": {
+			"$path": "src/client"
+		},
+		"server": {
+			"$path": "src/server"
+		},
+		"shared": {
+			"$path": "src/shared"
+		}
+	}
+}

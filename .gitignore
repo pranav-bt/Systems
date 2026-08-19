@@ -1,0 +1,29 @@
+# ------------------------------------------------------------------- Wally --
+# Fetched dependency trees. wally.toml and wally.lock stay tracked; only the
+# downloaded packages are ignored.
+Packages/
+DevPackages/
+ServerPackages/
+
+# ------------------------------------------------------------ Rojo / build --
+# Built places and models are artifacts. The source of truth is the .luau tree.
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+*.rbxl.lock
+*.rbxlx.lock
+sourcemap.json
+
+# ---------------------------------------------------------------- tooling --
+# Crash dumps from MSYS/Cygwin-based tools.
+*.stackdump
+# Machine-local Claude Code settings. A shared .claude/settings.json, if one is
+# ever added, stays tracked.
+.claude/settings.local.json
+
+# ---------------------------------------------------------------- OS junk --
+.DS_Store
+Thumbs.db
+desktop.ini
+
