@@ -854,7 +854,7 @@ function Zone.new(
 	CFrame: CFrame,
 	Size: Vector3,
 	Shape: Enum.PartType,
-	PartInstance: BasePart?,
+	PartInstance: Part?,
 	params: {
 		Transparency: number?,
 		ZoneUpdateInterval: number?,

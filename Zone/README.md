@@ -17,9 +17,10 @@ callback.
 - **Populations are maintained, never polled.** No `GetTagged` or `GetPlayers` call per
   sweep — discovery costs O(1) per spawn.
 - **One shared `Heartbeat` connection for every zone in the game**, not one per zone. Each
-  zone keeps its own interval; the shared ticker gathers every player's position *once* per
-  frame in which any zone is due and hands that single snapshot to whichever zones are due.
-- **Two-phase membership test**: a cached bounding sphere rejects distant players with one
+  zone keeps its own interval; the shared ticker gathers each watched population's positions
+  *once* per frame in which any zone is due and hands that single snapshot to whichever zones
+  are due.
+- **Two-phase membership test**: a cached bounding sphere rejects distant subjects with one
   dot product before any object-space transform happens.
 - Fires `subjectEntered` / `subjectExited` / `onDestroyed`, with `playerEntered` /
   `playerExited` retained as the same signals. These are **pure-Lua signals, not
