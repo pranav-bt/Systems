@@ -21,8 +21,9 @@ callback.
   frame in which any zone is due and hands that single snapshot to whichever zones are due.
 - **Two-phase membership test**: a cached bounding sphere rejects distant players with one
   dot product before any object-space transform happens.
-- Fires `subjectEntered` / `subjectExited` / `onDestroyed` (rolled from internal
-  `BindableEvent`s), with `playerEntered` / `playerExited` retained as the same signals.
+- Fires `subjectEntered` / `subjectExited` / `onDestroyed`, with `playerEntered` /
+  `playerExited` retained as the same signals. These are **pure-Lua signals, not
+  `BindableEvent`s** — see Why the events are not BindableEvents.
 - Auto-cleans up when the underlying part is destroyed, and removes players on
   `Players.PlayerRemoving`.
 - Server-only (the built-in `player` type relies on `Players` and character
@@ -33,6 +34,11 @@ callback.
 | File | Purpose |
 |---|---|
 | `src/init.luau` | The entire Zone module (self-contained). |
+
+Tests live in [`Tests/tests/`](../Tests): `test-zone.luau` (geometry, ticker, lifecycle),
+`test-zone-types.luau` (the subject-type registry) and `test-zone-signals.luau` (event
+identity and isolation) — 207 checks, run headless with no Studio. They load `src/init.luau`
+itself rather than a copy, so they cannot drift from it.
 
 ## Dependencies
 
@@ -52,7 +58,7 @@ Zone.new(
     CFrame: CFrame,
     Size: Vector3,
     Shape: Enum.PartType,        -- Block, Cylinder or Ball (anything else errors)
-    PartInstance: BasePart?,     -- optional existing part to adopt; a new Part is created if nil
+    PartInstance: Part?,         -- optional existing Part to adopt; a new Part is created if nil
     params: {
         Transparency: number?,                 -- default 1 (invisible)
         ZoneUpdateInterval: number?,           -- seconds between player sweeps; default 1, must be > 0
@@ -71,6 +77,11 @@ The created/adopted part is configured as `Anchored = true`, `CanCollide = false
 `CanQuery = false`, `CanTouch = false`, and parented to `workspace`. **Note that adopting a
 `PartInstance` overwrites those properties plus `Shape`, `Name`, `Transparency` and
 `Parent`** — don't hand it a part that is also scenery.
+
+An adopted part **must be a `Part`**. `MeshPart`, `UnionOperation` and `TrussPart` are
+`BasePart`s with no `Shape` property, and the zone needs to set one; passing one raises at the
+call site naming the class, rather than dying inside the library on a property write. If you
+need a mesh-shaped trigger, create the zone with `nil` and position it over the mesh.
 
 Constructor arguments are validated: an unsupported `Shape`, a `Size` with a non-positive
 axis, or a non-positive interval all raise immediately.
@@ -100,15 +111,17 @@ non-uniform size behaves sensibly instead of silently ignoring an axis.
 
 ### Events
 
-Each is a plain Roblox `RBXScriptSignal` (from an internal `BindableEvent`):
+Each is a pure-Lua signal with the `RBXScriptSignal` surface — `Connect`, `Once`, `Wait`, and
+a connection with `Disconnect`. Handlers fire in connection order and each runs on its own
+thread, so one that throws or yields cannot affect its siblings or the sweep:
 
 - **`zone.subjectEntered`** — fires `(ref, typeName: string)` when a subject first enters the volume.
 - **`zone.subjectExited`** — fires `(ref, typeName: string)` when a subject leaves the volume, stops being tracked, becomes unresolvable (a player who lost their character, a destroyed part), stops being of a watched type, or is still inside when the zone is destroyed.
 - **`zone.onDestroyed`** — fires `(zone)` on teardown, whether that came from `zone:Destroy()` or from the underlying part being destroyed.
 
 **`zone.playerEntered` and `zone.playerExited` are the *same two signals*** under their older
-names — one `BindableEvent` pair, not two. A handler written the way every existing consumer
-wrote it keeps working, because the type name simply arrives as a second argument it ignores:
+names — one signal pair, not two. A handler written the way every existing consumer wrote it
+keeps working, because the type name simply arrives as a second argument it ignores:
 
 ```lua
 zone.playerEntered:Connect(function(player) end)          -- still correct
@@ -351,13 +364,62 @@ guards:
   still sweeps. With per-zone connections this came for free; with a shared one it has to be
   explicit.
 - **`intervalCallback` runs under its own `pcall`.** It is the only consumer code called
-  directly rather than through a `BindableEvent` (which isolates its own handlers). Without
+  directly rather than through a signal (whose handlers each get their own thread). Without
   this, a throwing callback would abort the rest of *that* zone's sweep, so subjects later in
   the snapshot would miss their enter/exit for that tick.
 - **Each population's gather runs under `xpcall`.** A position resolver that throws costs its
   own population for that frame — warned once, since a broken resolver throws every frame —
   rather than taking down the tick. Guarding per *type* rather than per *ref* means the cost of
   the guard does not scale with how much you track.
+
+## Why the events are not BindableEvents
+
+A `BindableEvent` **serialises its arguments**. A table crosses it as a deep copy with its
+metatable stripped — measured in Studio, not assumed:
+
+| | through a `BindableEvent` |
+|---|---|
+| table identity | not preserved |
+| metatable | stripped; methods gone |
+| function fields | silently dropped, no error |
+| Instance identity | preserved |
+
+That last row is why this went unnoticed for years: while the only payload was a `Player`, the
+transport fitted the data. Subject types broke that, because a subject may be any ref at all.
+Handed a copy, a handler sees:
+
+```lua
+zone.subjectEntered:Connect(function(ref)
+    ref:damage(25)              -- errors: metatable stripped, method gone
+    if ref == myBot then end     -- always false
+    zone:IsSubjectInZone(ref)    -- false; the copy is not the tracked ref
+    ref.health = 1               -- silently mutates the copy; the real bot is untouched
+end)
+```
+
+The last line is the worst, because nothing raises: a damage handler runs to completion and the
+bot walks away at full health.
+
+**No payload can fix this.** A metatable is a table of functions, and functions do not survive
+the boundary either — there is nothing to pass. The fix is to stop crossing a boundary that was
+never needed: `BindableEvent` exists to carry values across script contexts and actors, and
+Zone's firer and handler are in the same VM on the same thread. A pure-Lua signal is a list of
+functions called in place, so identity holds for free.
+
+Two properties were deliberately preserved rather than reinvented:
+
+- **Handlers run in connection order**, because that is what `BindableEvent` did. Prepending
+  would have been a line shorter and would have silently reversed the order for anyone with two
+  handlers on one signal.
+- **Each handler runs on its own thread** (`task.spawn`), so one that throws neither aborts its
+  siblings nor propagates into the sweep, and one that yields does not suspend the sweep that
+  fired it. A direct call loses both; `pcall` would recover only the first, since Luau permits
+  yielding across it.
+
+What it costs: `zone.playerEntered` is no longer a real `RBXScriptSignal`, so a
+`typeof(...) == "RBXScriptSignal"` check would no longer match, and the events no longer show
+up in the Instance tree for debugging. What it saves: three Instances per zone, and the
+marshalling on every fire.
 
 ## Performance notes
 
@@ -408,7 +470,8 @@ Original source: `src/server/Systems/Zone.lua` in the CastleWars game.
 5. **`Destroy()` clears membership state and is idempotent.** It fired exit for everyone but
    left `playersInZone` populated and `playerCountInZone` non-zero, so an `onDestroyed`
    handler saw stale members and a second `Destroy()` re-fired every exit.
-6. **The `onDestroyed` `BindableEvent` is destroyed.** It was leaked — one per zone, forever.
+6. **The `onDestroyed` event's handlers are released on teardown.** The `BindableEvent` this
+   replaced was leaked — one Instance per zone, forever.
 7. **Cylinders respect `Size.Z`.** The test used `Size.Y / 2` as a single radius and ignored
    `Size.Z`, so a zone sized `(10, 8, 4)` accepted points well outside the part along Z.
 8. **Unsupported shapes error instead of failing silently.** A `Wedge` zone used to be
@@ -454,6 +517,14 @@ Original source: `src/server/Systems/Zone.lua` in the CastleWars game.
     see Subject types.
 20. **`GetSubjectsInZone`, `IsSubjectInZone`, `CountInZone`, `SetTypes`, `GetTypes`** and
     `zone.subjectCountInZone`.
+21. **Events are pure-Lua signals, not `BindableEvent`s** — a correctness fix, not a saving.
+    A `BindableEvent` deep-copies a table argument and strips its metatable, so every
+    non-Instance subject reached its handler as a broken duplicate. `Connect` / `Once` / `Wait`
+    / `Disconnect` and connection-order dispatch are unchanged; three Instances per zone are
+    gone. See Why the events are not BindableEvents.
+22. **Adopting a non-`Part` `BasePart` is refused at the call site.** A `MeshPart` used to die
+    inside the library on the `.Shape` assignment with *"Shape is not a valid member of
+    MeshPart"*, an error about a property the caller never mentioned.
 
 There were no `--!strict`/`--!native` pragmas in the original, so none were added, and the
 file is deliberately not `stylua`-formatted (per this repo's extraction conventions).

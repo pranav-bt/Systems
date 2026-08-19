@@ -33,8 +33,13 @@
 -- ISOLATION. One shared ticker means one zone must not be able to break another,
 -- so each sweep runs under xpcall, each population's gather runs under one of its
 -- own, and the interval callback -- the only consumer code called directly rather
--- than through a BindableEvent -- runs under pcall, so a throwing callback loses
--- only that call rather than the rest of the sweep.
+-- than through a signal -- runs under pcall, so a throwing callback loses only
+-- that call rather than the rest of the sweep.
+--
+-- REFS SURVIVE THE EVENT. The enter/exit signals are pure Lua, not
+-- BindableEvents, because a BindableEvent deep-copies a table argument and drops
+-- its metatable -- which would hand consumers a broken duplicate of any subject
+-- that is not an Instance. See the signal section.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -59,6 +64,148 @@ local PLAYER_TYPE = "player"
 Zone.AllTypes = table.freeze({})
 
 local DEFAULT_TYPES = table.freeze({ PLAYER_TYPE })
+
+-- ------------------------------------------------------------------ signal --
+
+-- A pure-Lua signal, replacing the three BindableEvents this module used to
+-- create per zone. This is not an optimisation. A BindableEvent SERIALISES its
+-- arguments, so a table crosses it as a deep copy with its metatable stripped --
+-- measured, not assumed. That was harmless while the only payload was a Player,
+-- because Instances marshal by reference; but a subject may be any ref at all,
+-- including a bot object or a plain table, and a handler handed a copy sees
+-- `ref ~= theBot`, `subjectsInZone[ref] == nil`, and a value whose methods are
+-- gone. No payload can fix it: a metatable is a table of functions, and functions
+-- do not survive the boundary either. The fix is to stop crossing a boundary that
+-- was never needed -- the firer and the handler are in the same VM.
+--
+-- Handlers dispatch through task.spawn because that is what BindableEvent did,
+-- and two properties depend on it: a handler that THROWS neither aborts its
+-- siblings nor propagates into Fire, and a handler that YIELDS does not suspend
+-- the sweep that fired it. A direct call would lose both, and pcall would recover
+-- only the first, since Luau permits yielding across it.
+
+local Signal = {}
+Signal.__index = Signal
+
+local Connection = {}
+Connection.__index = Connection
+
+function Connection:Disconnect()
+	if not self._connected then
+		return -- idempotent, like RBXScriptConnection
+	end
+	self._connected = false
+	local signal = self._signal
+	if signal then
+		if signal._head == self then
+			signal._head = self._next
+			if signal._tail == self then
+				signal._tail = nil
+			end
+		else
+			local prev = signal._head
+			while prev and prev._next ~= self do
+				prev = prev._next
+			end
+			if prev then
+				prev._next = self._next
+				if signal._tail == self then
+					signal._tail = prev
+				end
+			end
+		end
+	end
+	self._signal = nil
+end
+
+function Signal:Connect(fn: (...any) -> ())
+	assert(type(fn) == "function", `Signal:Connect expects a function (got {type(fn)})`)
+	local connection = setmetatable({
+		_fn = fn,
+		_signal = self,
+		_next = nil,
+		_connected = true,
+	}, Connection)
+	-- APPENDED, not prepended. Handlers run in connection order, which is what
+	-- BindableEvent did; prepending would be a line shorter and would silently
+	-- reverse the order for any consumer that has two handlers on one signal.
+	if self._tail then
+		self._tail._next = connection
+	else
+		self._head = connection
+	end
+	self._tail = connection
+	return connection
+end
+
+function Signal:Once(fn: (...any) -> ())
+	local connection
+	connection = self:Connect(function(...)
+		connection:Disconnect() -- before the handler, so a throwing one still unhooks
+		fn(...)
+	end)
+	return connection
+end
+
+function Signal:Wait()
+	local thread = coroutine.running()
+	local connection
+	connection = self:Connect(function(...)
+		connection:Disconnect()
+		task.spawn(thread, ...)
+	end)
+	return coroutine.yield()
+end
+
+function Signal:Fire(...)
+	local node = self._head
+	-- Stop at whoever was last when the fire began: a handler that connects another
+	-- handler must not have it receive the event already in flight.
+	local last = self._tail
+	while node do
+		-- Read the link BEFORE running the handler: it may disconnect itself, or any
+		-- handler further down the list.
+		local nextNode = if node == last then nil else node._next
+		if node._connected then
+			task.spawn(node._fn, ...)
+		end
+		node = nextNode
+	end
+end
+
+function Signal:DisconnectAll()
+	local node = self._head
+	while node do
+		node._connected = false
+		node = node._next
+	end
+	self._head = nil
+	self._tail = nil
+end
+
+-- The public face: Connect/Once/Wait and no Fire, so consumers cannot forge an
+-- event -- the guarantee BindableEvent.Event gave for free. A shared metatable
+-- rather than per-signal closures, so the face costs one small table.
+local Face = {}
+Face.__index = Face
+
+function Face:Connect(fn: (...any) -> ())
+	return self._signal:Connect(fn)
+end
+
+function Face:Once(fn: (...any) -> ())
+	return self._signal:Once(fn)
+end
+
+function Face:Wait()
+	return self._signal:Wait()
+end
+
+local function newSignal()
+	local signal = setmetatable({ _head = nil, _tail = nil }, Signal)
+	signal.event = setmetatable({ _signal = signal }, Face)
+	return signal
+end
 
 -- ---------------------------------------------------------------- geometry --
 
@@ -689,8 +836,8 @@ function Zone:OnIntervalCallback(ref: any, typeName: string?)
 		print(`for subject {ref}, {self.intervalTimeElapsed}, {self.intervalCallbackDurationOverride}`)
 	end
 	if self.intervalCallback and self.intervalTimeElapsed >= self.intervalCallbackDurationOverride then
-		-- Consumer code, called directly rather than through a BindableEvent (which
-		-- isolates its own handlers). Without this guard a throwing callback aborts
+		-- Consumer code, called directly rather than through a signal (whose handlers
+		-- each get their own thread). Without this guard a throwing callback aborts
 		-- the REST of this zone.s sweep, so subjects later in the snapshot would miss
 		-- their enter/exit this tick.
 		local ok, err = pcall(self.intervalCallback, ref, typeName or PLAYER_TYPE)
@@ -738,6 +885,19 @@ function Zone.new(
 	local override = (params and params.IntervalCallbackDurationOverride) or interval
 	assert(override > 0, `Zone.new: IntervalCallbackDurationOverride must be > 0 (got {override})`)
 
+	-- Only Part has a Shape property. Adopting a MeshPart, UnionOperation or
+	-- TrussPart used to die on the `.Shape` assignment below with "Shape is not a
+	-- valid member of MeshPart" -- an error raised from inside the library, about a
+	-- property the caller never mentioned. Fail here instead, naming the class.
+	if PartInstance then
+		assert(
+			PartInstance:IsA("Part"),
+			`Zone.new: PartInstance must be a Part, got a {PartInstance.ClassName}.`
+				.. ` Only Part has the Shape property this zone sets.`
+				.. ` Pass nil to have the zone create its own part.`
+		)
+	end
+
 	local zoneInstance = if PartInstance then PartInstance else Instance.new("Part")
 	zoneInstance.CFrame = CFrame
 	zoneInstance.Size = Size
@@ -757,19 +917,18 @@ function Zone.new(
 	setmetatable(self, Zone)
 
 	self.zoneInstance = zoneInstance
-	self._subjectEnteredEvent = Instance.new("BindableEvent")
-	self._subjectExitedEvent = Instance.new("BindableEvent")
-	-- ONE BindableEvent pair, two names. The subject.* names are canonical; the
-	-- player.* names are the SAME signal, kept because a handler written as
-	-- function(player) simply ignores the type name that now arrives as a second
-	-- argument. A second pair would double the Instance count per zone to separate
-	-- payloads that are identical.
-	self.subjectEntered = self._subjectEnteredEvent.Event
-	self.subjectExited = self._subjectExitedEvent.Event
-	self.playerEntered = self._subjectEnteredEvent.Event
-	self.playerExited = self._subjectExitedEvent.Event
-	self._onDestroyed = Instance.new("BindableEvent")
-	self.onDestroyed = self._onDestroyed.Event
+	self._subjectEnteredEvent = newSignal()
+	self._subjectExitedEvent = newSignal()
+	-- ONE signal pair, two names. The subject.* names are canonical; the player.*
+	-- names are the SAME signal, kept because a handler written as function(player)
+	-- simply ignores the type name that now arrives as a second argument. A second
+	-- pair would exist only to separate payloads that are identical.
+	self.subjectEntered = self._subjectEnteredEvent.event
+	self.subjectExited = self._subjectExitedEvent.event
+	self.playerEntered = self._subjectEnteredEvent.event
+	self.playerExited = self._subjectExitedEvent.event
+	self._onDestroyed = newSignal()
+	self.onDestroyed = self._onDestroyed.event
 	self.subjectsInZone = {}
 	-- The same table under its old name: the values are type names now rather than
 	-- `true`, so an existing truthiness check still reads correctly.
@@ -917,9 +1076,12 @@ function Zone:Destroy()
 		self._destroyConnection = nil
 	end
 
-	self._subjectEnteredEvent:Destroy()
-	self._subjectExitedEvent:Destroy()
-	self._onDestroyed:Destroy() -- was leaked: one BindableEvent per zone, forever
+	-- The BindableEvent these replaced was leaked here -- one Instance per zone,
+	-- forever. There is no Instance to leak now, but dropping the handlers still
+	-- matters: they hold references to consumer closures.
+	self._subjectEnteredEvent:DisconnectAll()
+	self._subjectExitedEvent:DisconnectAll()
+	self._onDestroyed:DisconnectAll()
 
 	if self.EnableDebugPrints then
 		print(`ZONE {name} DESTROYED`)

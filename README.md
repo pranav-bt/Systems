@@ -52,6 +52,19 @@ Each library's `README.md` documents its public API and a complete usage example
 extracted packages, the configuration/injection points and the exact changes made during
 extraction).
 
+## Tests
+
+[`Tests/`](Tests) is the repo's headless suite, and **any library change belongs with tests
+there.** Everything runs under Lune from this directory — no Studio, no Rojo, no place file:
+
+```
+lune run Tests/tests/test-zone.luau
+```
+
+265 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
+difference between loading a library's real source (preferred, cannot drift) and the vendored
+copies that multi-file packages still need.
+
 ## Notes per library
 
 - **LagCompensation** — the two internal modules became `.new(deps)` factories. Inject a
