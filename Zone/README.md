@@ -475,27 +475,55 @@ Now:
 
 ### What this costs, measured
 
-Benchmarked in Studio: one 60³ zone, subjects scattered over a 4000-stud square, 400 reps.
+Benchmarked in Studio: one 60-stud cube zone, subjects scattered over a 4000-stud square,
+400 reps per case, min of three trials after warmup. Times are per zone, per sweep.
 
-| N subjects | this library, positions from a Lua field | this library, positions read from `.Position` | `GetPartBoundsInBox` with an Include filter of N | `GetPartBoundsInBox`, no filter |
-|---|---|---|---|---|
-| 1,000 | 0.020 ms | 0.054 ms | 0.014 ms | 0.009 ms |
-| 5,000 | 0.103 ms | 0.283 ms | 0.049 ms | 0.009 ms |
+| N tracked | this library | `GetPartBoundsInBox`, `Include = {folder}` | `GetPartBoundsInBox`, `Include =` list of N |
+|---|---|---|---|
+| 30 | **0.0007 ms** | 0.0054 ms | 0.0075 ms |
+| 100 | **0.0021 ms** | 0.0053 ms | 0.0113 ms |
+| 300 | 0.0061 ms | **0.0053 ms** | 0.0224 ms |
+| 1,000 | 0.0206 ms | **0.0054 ms** | 0.0626 ms |
+| 3,000 | 0.0638 ms | **0.0053 ms** | 0.2058 ms |
 
-Two things worth knowing from that. The engine's spatial query is only a true broadphase when it
-is **unfiltered** — that column is flat, because the octree prunes. Add an `Include` whitelist,
-which is what any zone system needs in order to consider only tracked subjects, and the cost goes
-linear in the whitelist and lands within ~2x of this library's Lua loop. So most of the
-"engine broadphase" advantage does not survive contact with the filtering that zone detection
-requires.
+Three things to read out of that.
 
-And the loop is linear, so the arithmetic is easy: 5,000 subjects across 20 zones on a 1-second
-interval is ~2 ms of work *per second* — about 0.03 ms per frame once spread. The per-check cost
-was never the scaling limit; the bunching was.
+**The engine's spatial tree is real, and flat.** The middle column does not move between 30
+subjects and 3,000, because the tree prunes whole regions instead of examining candidates. At
+3,000 it is 12x cheaper than this library and the gap keeps widening. Nothing written in Lua
+competes with that at scale.
 
-If subject counts ever reach tens of thousands, the fix is a spatial hash built during the
-gather — which already walks every subject once, so bucketing it is nearly free, and each zone
-would then look only at cells its bounds overlap. Not worth doing at the scales above.
+**But an engine call has fixed overhead of roughly 0.005 ms** — crossing the boundary,
+constructing the query, allocating a result table — and below about **300 subjects** this
+library's scan has not done enough work to be worth paying it. At 30 subjects, the realistic
+size of a full server's player list, the scan is ~8x *faster* than the engine query. So the
+common case is not paying a penalty for lacking a broadphase.
+
+**How you filter decides whether the flat column is available at all.** A container is one
+filter entry: the engine prunes with its tree and ancestry-checks the few candidates it finds.
+An explicit list of N parts makes it process the filter set on every call, at which point it
+goes linear and loses to plain Lua. Worth knowing independently of this library: filter spatial
+queries by container, never by a long part list.
+
+An engine path for large part-backed populations is a documented, deliberately unwritten option
+— see the note above `gatherType` in `src/init.luau`, which records the preconditions, the
+filtering choices, and why the engine may only ever be used as a broad phase (it tests part
+*bounds*, which is a whole-body answer, where this library is centre-point). The trigger is a
+single type exceeding a few hundred part-backed subjects. Nothing below that scale justifies a
+second code path.
+
+Two reasons this library is the right tool for what it does, neither of which is raw speed:
+
+- **The engine's index holds parts.** A Lua table cannot go in it, so for a subject with no
+  Instance the fast path does not exist at any price.
+- **The absolute numbers are small.** The scan is linear, so the arithmetic is easy: 3,000
+  subjects across 20 zones on a 1-second interval is ~1.3 ms of work *per second* — about
+  0.02 ms per frame once phase-spread. Being off the theoretical best does not matter when the
+  best is 0.005 ms and the budget is 16.6 ms.
+
+Where it would start to matter is check *frequency* rather than population: tens of thousands of
+subjects at ten checks per second would run into milliseconds per frame, and that is the point
+at which the deferred path earns its keep.
 
 ## Changes from CastleWars original
 

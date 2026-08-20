@@ -511,6 +511,41 @@ local function fillSnapshot(entry: TypeEntry): number
 	return count
 end
 
+-- DEFERRED: an engine-broadphase path for part-backed populations.
+--
+-- fillSnapshot is a linear scan, and for populations that are actually BaseParts
+-- the engine can answer "who is in this box" from its own spatial tree instead.
+-- Measured in Studio -- one 60-stud zone, subjects over a 4000-stud square, min of
+-- three 400-rep trials:
+--
+--     N tracked   engine Include={folder}   this scan
+--          30            0.0054 ms          0.0007 ms
+--         300            0.0053 ms          0.0061 ms
+--        3000            0.0053 ms          0.0638 ms
+--
+-- The engine column is FLAT -- that is the tree pruning -- but a call costs about
+-- 0.005 ms in fixed overhead (boundary crossing plus a result table), and below
+-- roughly 300 subjects this scan has not done enough work to be worth paying it.
+-- So the crossover is ~300, and it is NOT worth switching before then. Left
+-- unwritten deliberately; the notes below are what a future implementation needs.
+--
+-- 1. PRECONDITION. Only for a type whose refs really are BaseParts. positionOf
+--    returns a Vector3, so the registry cannot tell -- the type would have to
+--    declare it (a flag on registerType), not be sniffed from the first ref, which
+--    breaks on a mixed population.
+-- 2. FILTERING decides whether the flat column is even available. Include={folder}
+--    needs the whole population under one container, which is a constraint on the
+--    game's scene layout that this library cannot impose. Two ways out: query
+--    unfiltered (0.0085 ms, also flat) and reject untracked hits by hash lookup,
+--    so cost tracks parts IN THE BOX rather than parts tracked; or filter by
+--    CollisionGroup, which is O(1) per candidate and needs no container.
+-- 3. SEMANTICS MUST NOT MOVE. GetPartBoundsInBox tests part BOUNDS, which is a
+--    whole-body answer; this library is centre-point. So use the engine strictly
+--    as a broad phase and still run _test on each candidate's position. Same
+--    membership, fewer candidates -- not a new detection mode.
+-- 4. ACCEPTANCE TEST. Fuzz both paths over randomised positions and assert the
+--    resulting membership sets are IDENTICAL. An optimisation that quietly changes
+--    who is inside a zone is worse than no optimisation.
 local function gatherType(name: string)
 	local entry = registry[name]
 	if not entry then
