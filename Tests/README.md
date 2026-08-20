@@ -6,7 +6,7 @@ Everything runs under [Lune](https://lune-org.github.io/docs) from the repo root
 no Rojo, no place file:
 
 ```
-lune run Tests/tests/test-zone.luau           # geometry, ticker, lifecycle      86
+lune run Tests/tests/test-zone.luau           # geometry, ticker, lifecycle      89
 lune run Tests/tests/test-zone-types.luau     # subject-type registry           91
 lune run Tests/tests/test-zone-signals.luau   # event identity and isolation    30
 lune run Tests/tests/test-mech.luau           # AI suite: Mech archetype        18
@@ -14,7 +14,7 @@ lune run Tests/tests/test-castle.luau         # AI suite: Castle archetype      
 lune run Tests/tests/test-bnb.luau            # AI suite: BnB archetype         21
 ```
 
-265 checks at present, all passing. Each file prints `N passed, M failed` and exits non-zero
+268 checks at present, all passing. Each file prints `N passed, M failed` and exits non-zero
 on failure.
 
 ## Layout

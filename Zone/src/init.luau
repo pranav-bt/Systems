@@ -65,6 +65,15 @@ Zone.AllTypes = table.freeze({})
 
 local DEFAULT_TYPES = table.freeze({ PLAYER_TYPE })
 
+-- Phase jitter needs randomness, and randomness needs a seam: with this pinned to
+-- a fixed generator a headless run replays exactly, which is the only way the
+-- suite can assert interval timing. Mirrors Bots.setRandom.
+local random: () -> number = math.random
+
+function Zone.setRandom(fn: (() -> number)?)
+	random = fn or math.random
+end
+
 -- ------------------------------------------------------------------ signal --
 
 -- A pure-Lua signal, replacing the three BindableEvents this module used to
@@ -568,6 +577,24 @@ local function tick(dt: number)
 			if zone._timeElapsed >= zone.interval then
 				zone._timeElapsed = 0 -- fell far behind (a long hitch); do not burst
 			end
+			-- SPREAD THE PHASE, once, after the first sweep. Every zone starts AT its
+			-- threshold so a zone created under someone detects them immediately -- but
+			-- that also means every zone built in the same frame is due on the same
+			-- frame, and subtracting a constant interval keeps them in lockstep for the
+			-- rest of the session. Measured: 50 zones over 30 players did 1500 checks in
+			-- one frame and nothing for the next 89. Delaying each zone by a random
+			-- fraction of one interval scatters them permanently, at the cost of one
+			-- longer-than-nominal gap per zone.
+			--
+			-- Both timers take the same offset: they are required to stay in lockstep
+			-- (see below), so shifting one without the other would put the callback
+			-- timer a frame short of its threshold on alternate sweeps.
+			if not zone._phased then
+				zone._phased = true
+				local offset = zone.interval * random()
+				zone._timeElapsed -= offset
+				zone.intervalTimeElapsed -= offset
+			end
 			-- Isolated per zone. Sharing one ticker created shared fate where the old
 			-- per-zone connections had none: without this, anything throwing inside one
 			-- zone.s sweep would abort the loop and every zone still queued behind it
@@ -942,6 +969,7 @@ function Zone.new(
 	self._active = true
 	self._resolved = {} -- reused per sweep; filled in phase 1 of the tick
 	self._warnedTypes = {}
+	self._phased = false -- set on the first sweep; see the ticker
 
 	self:SetTypes(params and params.types, params and params.excludeTypes)
 

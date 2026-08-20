@@ -36,9 +36,9 @@ callback.
 |---|---|
 | `src/init.luau` | The entire Zone module (self-contained). |
 
-Tests live in [`Tests/tests/`](../Tests): `test-zone.luau` (geometry, ticker, lifecycle),
+Tests live in [`Tests/tests/`](../Tests): `test-zone.luau` (geometry, ticker, lifecycle, phase spreading),
 `test-zone-types.luau` (the subject-type registry) and `test-zone-signals.luau` (event
-identity and isolation) — 207 checks, run headless with no Studio. They load `src/init.luau`
+identity and isolation) — 210 checks, run headless with no Studio. They load `src/init.luau`
 itself rather than a copy, so they cannot drift from it.
 
 ## Dependencies
@@ -105,6 +105,8 @@ non-uniform size behaves sensibly instead of silently ignoring an axis.
 - **`Name`** — the part's `Name`. Defaults to `"Zone"`.
 - **`EnableDebugPrints`** — when `true`, prints/warns on enter, exit, still-in-zone, destroy, and interval events. Defaults to `false`.
 - **`IntervalCallbackDurationOverride`** — minimum seconds between successive `intervalCallback` invocations for a player. Defaults to `ZoneUpdateInterval`.
+- **`ZoneUpdateInterval`** also determines phase. A zone sweeps immediately on the frame it is
+  created, and is then delayed once by a random fraction of one interval — see Phase spreading.
 - **`collisionGroup`** *(injection point — added during extraction)* — if provided, the part's `CollisionGroup` is set to this string. If omitted/`nil`, the part's `CollisionGroup` is **left untouched** (stays `"Default"`). The collision group is **not** created for you; register it via `PhysicsService` beforehand if you pass one.
 - **`types`** — which populations this zone watches. Defaults to `{ "player" }`. Pass `Zone.AllTypes` for every type registered at sweep time. Resolved *per sweep*, so a type registered after the zone still counts and require order stops mattering.
 - **`excludeTypes`** — names removed from whatever `types` resolves to. Applies to an explicit list as well as to `Zone.AllTypes`, so `{ types = Zone.AllTypes, excludeTypes = { "player" } }` means "everything but players".
@@ -161,6 +163,7 @@ Error isolation).
 - **`zone:GetTypes(): { string }`** — the resolved, sorted type names this zone watches right now. Diagnostic: it answers "did my type name actually take effect?" without reading private fields.
 - **`zone:UpdateZone(CFrame, Size)`** — move/resize the volume. **The only correct way to do it** — see below.
 - **`zone:UpdateZoneInterval(newInterval)`** — change the sweep interval at runtime (must be `> 0`).
+- **`Zone.setRandom(fn?)`** *(module-level)* — replace the generator used for phase spreading; `nil` restores `math.random`. Pin it to a fixed function and a headless run replays exactly, which is how this library's own timing assertions stay deterministic. Mirrors `Bots.setRandom`.
 - **`zone:Destroy()`** — unregisters from the shared ticker, fires `subjectExited` for remaining subjects, fires `onDestroyed`, disconnects everything, clears membership state, and destroys the part. **Idempotent.**
 
 Also readable: `zone.subjectCountInZone` (total inside), `zone.playerCountInZone`,
@@ -422,6 +425,27 @@ What it costs: `zone.playerEntered` is no longer a real `RBXScriptSignal`, so a
 up in the Instance tree for debugging. What it saves: three Instances per zone, and the
 marshalling on every fire.
 
+## Phase spreading
+
+Every zone starts *at* its threshold, so a zone created underneath someone detects them on the
+very next frame rather than up to an interval later. Left alone, that has a nasty consequence:
+every zone built in the same frame is due in the same frame, and subtracting a constant interval
+keeps them in lockstep for the rest of the session.
+
+Measured, 50 zones over 30 players on a 1-second interval:
+
+| | busy frames (of 90) | worst frame |
+|---|---|---|
+| lockstep | 2 | 1500 checks |
+| spread | 18 | 150 checks |
+
+So each zone is delayed **once**, after its first sweep, by a random fraction of one interval.
+The cost is one longer-than-nominal gap per zone, paid at startup; the benefit is that the fleet
+never re-converges. `Zone.setRandom` exists so this stays reproducible under test.
+
+The startup frame itself is deliberately left bunched — immediate first detection is worth one
+busy frame at server start, which is not a recurring spike.
+
 ## Performance notes
 
 The old shape was one `Heartbeat` connection *per zone*, each independently sweeping every
@@ -446,6 +470,32 @@ Now:
 - Squared-distance comparisons throughout: no `math.sqrt` in the hot path.
 - The liveness re-check calls a resolver once per *member*, not once per tracked subject — a
   zone's membership is small by construction.
+- **Sweeps are phase-spread** so the fleet's work is spread across frames rather than landing on
+  one — see above.
+
+### What this costs, measured
+
+Benchmarked in Studio: one 60³ zone, subjects scattered over a 4000-stud square, 400 reps.
+
+| N subjects | this library, positions from a Lua field | this library, positions read from `.Position` | `GetPartBoundsInBox` with an Include filter of N | `GetPartBoundsInBox`, no filter |
+|---|---|---|---|---|
+| 1,000 | 0.020 ms | 0.054 ms | 0.014 ms | 0.009 ms |
+| 5,000 | 0.103 ms | 0.283 ms | 0.049 ms | 0.009 ms |
+
+Two things worth knowing from that. The engine's spatial query is only a true broadphase when it
+is **unfiltered** — that column is flat, because the octree prunes. Add an `Include` whitelist,
+which is what any zone system needs in order to consider only tracked subjects, and the cost goes
+linear in the whitelist and lands within ~2x of this library's Lua loop. So most of the
+"engine broadphase" advantage does not survive contact with the filtering that zone detection
+requires.
+
+And the loop is linear, so the arithmetic is easy: 5,000 subjects across 20 zones on a 1-second
+interval is ~2 ms of work *per second* — about 0.03 ms per frame once spread. The per-check cost
+was never the scaling limit; the bunching was.
+
+If subject counts ever reach tens of thousands, the fix is a spatial hash built during the
+gather — which already walks every subject once, so bucketing it is nearly free, and each zone
+would then look only at cells its bounds overlap. Not worth doing at the scales above.
 
 ## Changes from CastleWars original
 
@@ -523,7 +573,11 @@ Original source: `src/server/Systems/Zone.lua` in the CastleWars game.
     non-Instance subject reached its handler as a broken duplicate. `Connect` / `Once` / `Wait`
     / `Disconnect` and connection-order dispatch are unchanged; three Instances per zone are
     gone. See Why the events are not BindableEvents.
-22. **Adopting a non-`Part` `BasePart` is refused at the call site.** A `MeshPart` used to die
+22. **Sweeps are phase-spread.** Zones built in one frame used to stay in lockstep forever: 50
+    zones over 30 players did 1500 checks in one frame and nothing for the next 89. Each zone is
+    now delayed once by a random fraction of an interval, and `Zone.setRandom` keeps that
+    reproducible.
+23. **Adopting a non-`Part` `BasePart` is refused at the call site.** A `MeshPart` used to die
     inside the library on the `.Shape` assignment with *"Shape is not a valid member of
     MeshPart"*, an error about a property the caller never mentioned.
 

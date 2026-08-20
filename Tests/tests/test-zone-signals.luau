@@ -16,6 +16,12 @@ local V = rbx.Vector3.new
 local CF = rbx.CFrame.new
 local PartType = rbx.Enum.PartType
 
+-- Pin the phase jitter off, so a step of `interval` always lands a sweep and the
+-- timing assertions below stay exact. Spreading is asserted separately.
+Zone.setRandom(function()
+	return 0
+end)
+
 local passed, failed = 0, 0
 local function check(name, ok, detail)
 	if ok then

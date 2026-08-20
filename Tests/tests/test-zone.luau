@@ -7,6 +7,12 @@ local V = rbx.Vector3.new
 local CF = rbx.CFrame.new
 local PartType = rbx.Enum.PartType
 
+-- Pin the phase jitter off, so a step of `interval` always lands a sweep and the
+-- timing assertions below stay exact. Spreading is asserted separately.
+Zone.setRandom(function()
+	return 0
+end)
+
 local passed, failed = 0, 0
 local function check(name, ok, detail)
 	if ok then
@@ -442,6 +448,59 @@ do
 	check("adopting a real Part still works", zone.zoneInstance == part)
 	check("and it is configured as a zone part", part.Anchored and not part.CanCollide and not part.CanQuery)
 	zone:Destroy()
+end
+
+print("phase spreading: many zones do not all sweep on one frame")
+do
+	rbx.reset()
+	for i = 1, 30 do
+		rbx.addPlayer("P" .. i, V(i * 3, 0, 0))
+	end
+
+	-- A deterministic spread of offsets across [0, 1): enough to prove the zones
+	-- scatter, without depending on a real RNG.
+	local nth = 0
+	Zone.setRandom(function()
+		nth += 1
+		return (nth % 50) / 50
+	end)
+
+	local tests = 0
+	local realContains = Zone.Contains
+	Zone.Contains = function(self, position)
+		tests += 1
+		return realContains(self, position)
+	end
+
+	local zones = {}
+	for i = 1, 50 do
+		zones[i] = Zone.new(CF(i * 8, 0, 0), V(6, 6, 6), PartType.Block, nil, { ZoneUpdateInterval = 1 })
+	end
+	rbx.step(1 / 60) -- the deliberate startup sweep: every zone is due at once
+
+	local busy, worst, total = 0, 0, 0
+	for _ = 1, 90 do
+		tests = 0
+		rbx.step(1 / 60)
+		if tests > 0 then
+			busy += 1
+		end
+		worst = math.max(worst, tests)
+		total += tests
+	end
+
+	Zone.Contains = realContains
+	for _, zone in zones do
+		zone:Destroy()
+	end
+	Zone.setRandom(function()
+		return 0
+		end)
+
+	-- Before this fix: 2 busy frames out of 90, worst frame 1500.
+	check("the work lands on many frames, not one or two", busy >= 20, busy)
+	check("and no single frame carries the whole fleet", worst < 1500, worst)
+	check("without losing work overall", total > 0, total)
 end
 
 print(("\n%d passed, %d failed"):format(passed, failed))
