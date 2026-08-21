@@ -33,6 +33,7 @@ Two lineages live here:
 
 | Library | Realm | Wally deps | What it does |
 |---|---|---|---|
+| **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it was extracted from disagreed about. Ships no copy. |
 | **Zone** | server | none | Subject-in-volume detection (rotated box / cylinder / sphere), enter/exit events. Watches named populations -- players by default, or bots/vehicles/anything with a position resolver -- with sets maintained by signal rather than polled. One shared Heartbeat for every zone, cached bounds with a broad-phase reject, and a cached HumanoidRootPart per player. |
 | **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
 | **Moveables** | server + client | none | Authored objects follow waypoint paths (ping-pong + stops) and carry riders standing on them. |
@@ -61,7 +62,7 @@ there.** Everything runs under Lune from this directory — no Studio, no Rojo, 
 lune run Tests/tests/test-zone.luau
 ```
 
-268 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
+319 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
 difference between loading a library's real source (preferred, cannot drift) and the vendored
 copies that multi-file packages still need.
 

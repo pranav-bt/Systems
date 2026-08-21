@@ -192,6 +192,17 @@ local function newContainer(className)
 	function container.GetFullName(self)
 		return self.Name
 	end
+	function container.FindFirstChild(self, name)
+		for _, kid in self._kids do
+			if kid.Name == name then
+				return kid
+			end
+		end
+		return nil
+	end
+	function container.WaitForChild(self, name, _timeout)
+		return self:FindFirstChild(name) -- manually stepped: nothing arrives while we wait
+	end
 	function container.GetChildren(self)
 		local out = {}
 		for _, kid in self._kids do
@@ -224,6 +235,12 @@ local function newContainer(className)
 	return container
 end
 
+-- Declared before the services close over them. ReplicatedStorage is a real
+-- container here because libraries provision remote folders into it.
+rbx.ReplicatedStorage = newContainer("Folder")
+rbx.ReplicatedStorage.Name = "ReplicatedStorage"
+rbx.promptTriggered, rbx.firePromptTriggered = makeSignal()
+
 local function newBindable()
 	local event, fire = makeSignal()
 	local bindable = { Event = event, _destroyed = false }
@@ -247,6 +264,47 @@ rbx.Instance = {
 			return newBindable()
 		elseif class == "Model" or class == "Folder" then
 			return newContainer(class)
+		elseif class == "RemoteEvent" then
+			local toServer, fireToServer, serverHandlers = makeSignal()
+			local toClient, fireToClient = makeSignal()
+			local remote = {
+				ClassName = "RemoteEvent",
+				Name = "RemoteEvent",
+				Parent = nil,
+				OnServerEvent = toServer,
+				OnClientEvent = toClient,
+				_serverHandlers = serverHandlers,
+			}
+			function remote.IsA(_, queried)
+				return queried == "RemoteEvent" or queried == "Instance"
+			end
+			-- FireClient drops the player argument the real API takes first: a headless
+			-- test has one client, and keeping the signature would only invite asserting
+			-- on a value the shim invented.
+			function remote.FireClient(_, _player, ...)
+				fireToClient(...)
+			end
+			function remote.FireAllClients(_, ...)
+				fireToClient(...)
+			end
+			function remote.FireServer(_, ...)
+				fireToServer(...)
+			end
+			return remote
+		elseif class == "ProximityPrompt" then
+			local prompt = {
+				ClassName = "ProximityPrompt",
+				Name = "ProximityPrompt",
+				ActionText = "",
+				ObjectText = "",
+				MaxActivationDistance = 0,
+				RequiresLineOfSight = true,
+				Parent = nil,
+			}
+			function prompt.IsA(_, queried)
+				return queried == "ProximityPrompt" or queried == "Instance"
+			end
+			return prompt
 		elseif class == "MeshPart" then
 			-- A BasePart with no Shape property: the case Zone.new must refuse rather
 			-- than die on a property write.
@@ -342,6 +400,18 @@ rbx.game = {
 			}
 		elseif name == "RunService" then
 			return { Heartbeat = heartbeat }
+		elseif name == "ReplicatedStorage" then
+			return rbx.ReplicatedStorage
+		elseif name == "GroupService" then
+			-- Enough to require a module that asks for the service. Membership itself is
+			-- an injected seam in the libraries here, so nothing tests through this.
+			return {
+				GetGroupsAsync = function(_, _userId)
+					return {}
+				end,
+			}
+		elseif name == "ProximityPromptService" then
+			return { PromptTriggered = rbx.promptTriggered }
 		elseif name == "CollectionService" then
 			return {
 				GetTagged = function(_, tag)

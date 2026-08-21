@@ -28,8 +28,10 @@ local ENVIRONMENT = {
 	task = rbx.task,
 }
 
-return function(name: string): any
-	local path = `{name}/src/init.luau`
+return function(name: string, realm: string?): any
+	-- A realm names a subfolder for the server+client libraries (TimeSync, CommunityReward);
+	-- omit it for the single-file ones.
+	local path = if realm then `{name}/src/{realm}/init.luau` else `{name}/src/init.luau`
 	assert(fs.isFile(path), `shim/library: no {path} -- run tests from the repo root`)
 	local chunk = luau.load(fs.readFile(path), {
 		debugName = name,

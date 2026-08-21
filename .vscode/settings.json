@@ -1,0 +1,34 @@
+{
+    // Workspace-scoped only: nothing here changes your other projects.
+    //
+    // WHY THIS FILE EXISTS. This repo has an HTTPS github.com remote whose
+    // credential was never stored, so anything that contacts the remote raises a
+    // Git Credential Manager dialog. These switches stop the editor from
+    // contacting it on its own. They are a mitigation, not the cure -- the cure is
+    // either storing the credential once or dropping the remote until you push.
+
+    // The built-in periodic fetch. Off by default, set explicitly to rule it out.
+    "git.autofetch": false,
+    "git.autofetchPeriod": 0,
+
+    // Do not offer to publish/fetch this repo unprompted.
+    "git.autoRepositoryDetection": "openEditors",
+    "git.fetchOnPull": false,
+    "git.pullBeforeCheckout": false,
+
+    // GitLens' remote-provider integration is what authenticates to GitHub for
+    // rich hovers, autolinks and PR info. Off here means GitLens still works
+    // locally (blame, history, graph) without ever touching the network.
+    "gitlens.integrations.enabled": false,
+    "gitlens.autolinks": [],
+
+    // The Contributors view with showAllBranches wants remote branch refs; the
+    // global setting turns it on, so narrow it back for this repo.
+    "gitlens.views.contributors.showAllBranches": false,
+
+    // Stop VS Code's GitHub auth provider volunteering for plain git operations.
+    "github.gitAuthentication": false,
+
+    // GitHub Actions: this repo has no workflows, so nothing here needs the API.
+    "github-actions.workflows.pinned.refresh.enabled": false
+}
