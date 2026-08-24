@@ -114,6 +114,33 @@ rbx.Enum = {
 	},
 }
 
+-- --------------------------------------------------------------- Random --
+
+-- Seeded and deterministic, so a library that jitters or picks at random replays
+-- identically between runs. A test that wants a fixed choice seeds its own.
+rbx.Random = {
+	new = function(seed: number?)
+		local state = seed or 1
+		local generator = {}
+		local function nextFloat(): number
+			-- A small LCG. Not good randomness; perfectly good repeatable randomness.
+			state = (1103515245 * state + 12345) % 2147483648
+			return state / 2147483648
+		end
+		function generator.NextNumber(_, min: number?, max: number?): number
+			local value = nextFloat()
+			if min and max then
+				return min + value * (max - min)
+			end
+			return value
+		end
+		function generator.NextInteger(_, min: number, max: number): number
+			return math.floor(min + nextFloat() * (max - min + 1))
+		end
+		return generator
+	end,
+}
+
 -- ---------------------------------------------------------------- signals --
 
 local function makeSignal()
@@ -203,6 +230,37 @@ local function newContainer(className)
 	function container.WaitForChild(self, name, _timeout)
 		return self:FindFirstChild(name) -- manually stepped: nothing arrives while we wait
 	end
+	function container.GetDescendants(self)
+		local out = {}
+		for _, kid in self._kids do
+			table.insert(out, kid)
+			if kid.GetDescendants then
+				for _, deep in kid:GetDescendants() do
+					table.insert(out, deep)
+				end
+			end
+		end
+		return out
+	end
+	function container.FindFirstChildWhichIsA(self, class, recursive)
+		for _, kid in (if recursive then self:GetDescendants() else self._kids) do
+			if kid.IsA and kid:IsA(class) then
+				return kid
+			end
+		end
+		return nil
+	end
+	function container.FindFirstChildOfClass(self, class)
+		for _, kid in self._kids do
+			if kid.ClassName == class then
+				return kid
+			end
+		end
+		return nil
+	end
+	function container.ClearAllChildren(self)
+		table.clear(self._kids)
+	end
 	function container.GetChildren(self)
 		local out = {}
 		for _, kid in self._kids do
@@ -264,6 +322,12 @@ rbx.Instance = {
 			return newBindable()
 		elseif class == "Model" or class == "Folder" then
 			return newContainer(class)
+		elseif class == "StringValue" then
+			local value = { ClassName = "StringValue", Name = "StringValue", Value = "", Parent = nil }
+			function value.IsA(_, queried)
+				return queried == "StringValue" or queried == "Instance"
+			end
+			return value
 		elseif class == "RemoteEvent" then
 			local toServer, fireToServer, serverHandlers = makeSignal()
 			local toClient, fireToClient = makeSignal()
@@ -320,7 +384,9 @@ rbx.Instance = {
 	end,
 }
 
-rbx.workspace = { Name = "Workspace" }
+-- A real container: libraries provision folders into Workspace and then look for them.
+rbx.workspace = newContainer("Folder")
+rbx.workspace.Name = "Workspace"
 
 -- --------------------------------------------------------------- services --
 
@@ -410,6 +476,17 @@ rbx.game = {
 					return {}
 				end,
 			}
+		elseif name == "PhysicsService" then
+			-- Enough to require a module that asks. Registering a collision group is a
+			-- side effect nothing headless can observe, so it is a no-op that reports
+			-- "not registered" -- which is the branch a library should handle anyway.
+			return {
+				RegisterCollisionGroup = function() end,
+				IsCollisionGroupRegistered = function()
+					return false
+				end,
+				CollisionGroupSetCollidable = function() end,
+			}
 		elseif name == "ProximityPromptService" then
 			return { PromptTriggered = rbx.promptTriggered }
 		elseif name == "CollectionService" then
@@ -443,11 +520,21 @@ function rbx.addPlayer(name, position)
 	hrp.Parent = { Name = "Character" }
 	hrp.CFrame = cf(position or v3(0, 0, 0), 0)
 	hrp.Position = position or v3(0, 0, 0)
-	local character = { _children = { HumanoidRootPart = hrp } }
-	function character.FindFirstChild(self, key)
-		return self._children[key]
-	end
-	local player = { Name = name, Character = character, _hrp = hrp }
+	local character = newContainer("Model")
+	character.Name = name
+	character:Add(hrp)
+	local characterAdded, fireCharacterAdded = makeSignal()
+	local characterRemoving, fireCharacterRemoving = makeSignal()
+	local player = {
+		Name = name,
+		Character = character,
+		_hrp = hrp,
+		CharacterAdded = characterAdded,
+		CharacterRemoving = characterRemoving,
+		-- Exposed so a test can drive a respawn: `player._fireCharacterAdded(character)`.
+		_fireCharacterAdded = fireCharacterAdded,
+		_fireCharacterRemoving = fireCharacterRemoving,
+	}
 	table.insert(playerList, player)
 	firePlayerAdded(player)
 	return player
