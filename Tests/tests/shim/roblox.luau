@@ -41,6 +41,9 @@ function Vector3.__mul(a, b)
 	end
 	return v3(a.X * b.X, a.Y * b.Y, a.Z * b.Z)
 end
+function Vector3.__unm(a)
+	return v3(-a.X, -a.Y, -a.Z)
+end
 function Vector3.__eq(a, b)
 	return a.X == b.X and a.Y == b.Y and a.Z == b.Z
 end
@@ -57,7 +60,16 @@ function Vector3.Dot(self, other)
 	return self.X * other.X + self.Y * other.Y + self.Z * other.Z
 end
 
-rbx.Vector3 = { new = v3 }
+-- The constants library code reaches for. `zero` in particular is what an unset offset
+-- defaults to, so its absence shows up as a nil arithmetic error three calls away.
+rbx.Vector3 = {
+	new = v3,
+	zero = v3(0, 0, 0),
+	one = v3(1, 1, 1),
+	xAxis = v3(1, 0, 0),
+	yAxis = v3(0, 1, 0),
+	zAxis = v3(0, 0, 1),
+}
 
 -- ------------------------------------------------------------------- CFrame --
 
@@ -85,6 +97,26 @@ end
 function CFrame.__tostring(self)
 	return ("CFrame(%s, yaw %.2f)"):format(tostring(self.Position), self._yaw)
 end
+-- Local offset -> world direction, using the stored basis.
+local function rotate(frame, offset)
+	return frame._right * offset.X + frame._up * offset.Y + frame._back * offset.Z
+end
+
+-- Composition and inverse, enough for placing a rig: position plus a yaw is closed under
+-- both, so no general rotation matrix is needed.
+function CFrame.__mul(a, b)
+	if getmetatable(b) == CFrame then
+		return cf(a.Position + rotate(a, b.Position), a._yaw + b._yaw)
+	end
+	return a.Position + rotate(a, b)
+end
+function CFrame.Inverse(self)
+	local inverted = cf(v3(0, 0, 0), -self._yaw)
+	return cf(rotate(inverted, self.Position * -1), -self._yaw)
+end
+function CFrame.ToObjectSpace(self, other)
+	return self:Inverse() * other
+end
 function CFrame.PointToObjectSpace(self, point)
 	local d = point - self.Position
 	return v3(d:Dot(self._right), d:Dot(self._up), d:Dot(self._back))
@@ -105,6 +137,16 @@ rbx.CFrame = {
 -- -------------------------------------------------------------------- Enum --
 
 rbx.Enum = {
+	AnimationPriority = {
+		Core = "Core",
+		Idle = "Idle",
+		Movement = "Movement",
+		Action = "Action",
+	},
+	PositionAlignmentMode = {
+		OneAttachment = "OneAttachment",
+		TwoAttachment = "TwoAttachment",
+	},
 	PartType = {
 		Block = "Block",
 		Cylinder = "Cylinder",
@@ -179,6 +221,7 @@ local function newPart()
 		CanQuery = true,
 		CanTouch = true,
 		CollisionGroup = "Default",
+		Massless = false,
 		Shape = "Block",
 		Transparency = 0,
 		Parent = nil,
@@ -194,6 +237,42 @@ local function newPart()
 	end
 	function part.IsA(_, class)
 		return class == "Part" or class == "BasePart"
+	end
+	function part.SetAttribute(self, name, value)
+		local bag = rawget(self, "_attributes")
+		if not bag then
+			bag = {}
+			rawset(self, "_attributes", bag)
+		end
+		bag[name] = value
+	end
+	function part.GetAttribute(self, name)
+		local bag = rawget(self, "_attributes")
+		return if bag then bag[name] else nil
+	end
+	function part.SetNetworkOwner() end
+	function part.Clone(self)
+		local copy = newPart()
+		for _, key in { "Name", "Size", "CFrame", "Position", "Anchored", "CanCollide", "CanQuery", "CanTouch", "CollisionGroup", "Shape", "Transparency", "Massless" } do
+			copy[key] = self[key]
+		end
+		return copy
+	end
+	function part.GetDescendants(self)
+		local out = {}
+		for _, kid in rawget(self, "_kids") or {} do
+			table.insert(out, kid)
+		end
+		return out
+	end
+	function part.Add(self, child)
+		local kids = rawget(self, "_kids")
+		if not kids then
+			kids = {}
+			rawset(self, "_kids", kids)
+		end
+		table.insert(kids, child)
+		child.Parent = self
 	end
 	function part.FindFirstChild(self, name)
 		local children = self._children
@@ -268,6 +347,54 @@ local function newContainer(className)
 		end
 		return out
 	end
+	--[[
+		A shallow-ish clone: a fresh container with fresh copies of its children.
+
+		Deep enough for a catalog entry to be cloned into a live pet, which is the only
+		thing that clones here. It deliberately does NOT copy grandchildren -- a test that
+		needs a deeper rig should build one rather than lean on this.
+	]]
+	function container.SetAttribute(self, name, value)
+		local bag = rawget(self, "_attributes")
+		if not bag then
+			bag = {}
+			rawset(self, "_attributes", bag)
+		end
+		bag[name] = value
+	end
+	function container.GetAttribute(self, name)
+		local bag = rawget(self, "_attributes")
+		return if bag then bag[name] else nil
+	end
+	function container.Destroy(self)
+		if self._destroyed then
+			return
+		end
+		self._destroyed = true
+		for _, kid in self._kids do
+			if kid.Destroy then
+				kid:Destroy()
+			end
+		end
+		table.clear(self._kids)
+		self.Parent = nil
+	end
+	function container.Clone(self)
+		local copy = newContainer(className)
+		copy.Name = self.Name
+		if className == "Model" then
+			copy._pivot = self._pivot
+			copy._scale = self._scale
+		end
+		for _, kid in self._kids do
+			local kidCopy = if kid.Clone then kid:Clone() else kid
+			copy:Add(kidCopy)
+			if className == "Model" and self.PrimaryPart == kid then
+				copy.PrimaryPart = kidCopy
+			end
+		end
+		return copy
+	end
 	function container.Add(self, child)
 		table.insert(self._kids, child)
 		child.Parent = self
@@ -282,12 +409,25 @@ local function newContainer(className)
 		fireChildRemoved(child)
 	end
 	if className == "Model" then
+		container.PrimaryPart = nil
+		container._scale = 1
+		function container.ScaleTo(self, scale)
+			self._scale = scale
+		end
+		function container.GetScale(self)
+			return self._scale
+		end
 		container._pivot = cf(v3(0, 0, 0), 0)
 		function container.GetPivot(self)
 			return self._pivot
 		end
-		function container.PivotTo(self, position)
-			self._pivot = cf(position, 0)
+		-- Accepts a CFrame (what library code passes) or a bare Vector3 (what a test
+		-- usually wants). Moves the pivot only: nothing here re-seats the children, so
+		-- assert on GetPivot rather than on a part's CFrame.
+		function container.PivotTo(self, target)
+			self._pivot = if getmetatable(target) == getmetatable(cf(v3(0, 0, 0), 0))
+				then target
+				else cf(target, 0)
 		end
 	end
 	return container
@@ -322,6 +462,130 @@ rbx.Instance = {
 			return newBindable()
 		elseif class == "Model" or class == "Folder" then
 			return newContainer(class)
+		elseif class == "AnimationController" or class == "Humanoid" or class == "Animator" then
+			-- Containers so FindFirstChildOfClass/FindFirstChildWhichIsA can walk them, which
+			-- is how a rig locates the animator it should load tracks on.
+			local host = newContainer(class)
+			if class == "Animator" then
+				--[[
+					LoadAnimation hands back a fake AnimationTrack that records what was asked of
+					it. Nothing here plays: the point is the SEQUENCE -- which track was weighted
+					out, which was stopped, what came back afterwards -- and a real animation
+					system would only make that harder to assert.
+				]]
+				function host.LoadAnimation(_, animation)
+					local stopped, fireStopped, stoppedHandlers = makeSignal()
+					local track
+					track = {
+						ClassName = "AnimationTrack",
+						Animation = animation,
+						AnimationId = animation.AnimationId,
+						Looped = false,
+						Priority = nil,
+						IsPlaying = false,
+						Weight = 1,
+						Speed = 1,
+						Stopped = stopped,
+						_stoppedHandlers = stoppedHandlers,
+						-- What the rig asked for, in order, so a test can assert the handover.
+						_calls = {},
+					}
+					function track.Play(_, fade)
+						track.IsPlaying = true
+						table.insert(track._calls, "Play")
+						track._playFade = fade
+					end
+					function track.Stop(_, fade)
+						if not track.IsPlaying then
+							return
+						end
+						track.IsPlaying = false
+						track._stopFade = fade
+						table.insert(track._calls, "Stop")
+						fireStopped()
+					end
+					function track.AdjustWeight(_, weight, fade)
+						track.Weight = weight
+						track._weightFade = fade
+						table.insert(track._calls, `Weight={weight}`)
+					end
+					function track.AdjustSpeed(_, speed)
+						track.Speed = speed
+						table.insert(track._calls, `Speed={speed}`)
+					end
+					return track
+				end
+			end
+			return host
+		elseif class == "Animation" then
+			local animation = { ClassName = "Animation", Name = "Animation", AnimationId = "", Parent = nil }
+			function animation.IsA(_, queried)
+				return queried == "Animation" or queried == "Instance"
+			end
+			return animation
+		elseif class == "Attachment" then
+			local attachment = {
+				ClassName = "Attachment",
+				Name = "Attachment",
+				CFrame = cf(v3(0, 0, 0), 0),
+				Position = v3(0, 0, 0),
+				Parent = nil,
+			}
+			function attachment.IsA(_, queried)
+				return queried == "Attachment" or queried == "Instance"
+			end
+			function attachment.SetAttribute(self, name, value)
+				local bag = rawget(self, "_attributes")
+				if not bag then
+					bag = {}
+					rawset(self, "_attributes", bag)
+				end
+				bag[name] = value
+			end
+			function attachment.GetAttribute(self, name)
+				local bag = rawget(self, "_attributes")
+				return if bag then bag[name] else nil
+			end
+			function attachment.Destroy(self)
+				self.Parent = nil
+			end
+			-- World space is the parent part's frame composed with the local offset. Enough
+			-- for a slot to say where it is; nothing here simulates.
+			function attachment.__index(self, key)
+				if key == "WorldCFrame" then
+					local parent = rawget(self, "Parent")
+					local base = if parent and parent.CFrame then parent.CFrame else cf(v3(0, 0, 0), 0)
+					return cf(base.Position + rawget(self, "Position"), 0)
+				elseif key == "WorldPosition" then
+					return self.WorldCFrame.Position
+				end
+				return nil
+			end
+			return setmetatable(attachment, { __index = attachment.__index })
+		elseif class == "AlignPosition" or class == "AlignOrientation" or class == "WeldConstraint" then
+			-- Property bags. What matters to a test is WHICH constraint a mode created and
+			-- what it was pointed at, not that anything moved.
+			local constraint = {
+				ClassName = class,
+				Name = class,
+				Parent = nil,
+				Attachment0 = nil,
+				Attachment1 = nil,
+				Part0 = nil,
+				Part1 = nil,
+				Mode = nil,
+				Position = v3(0, 0, 0),
+				RigidityEnabled = false,
+				ReactionForceEnabled = false,
+				ReactionTorqueEnabled = false,
+				Responsiveness = 0,
+				MaxForce = 0,
+				MaxTorque = 0,
+			}
+			function constraint.IsA(_, queried)
+				return queried == class or queried == "Instance"
+			end
+			return constraint
 		elseif class == "StringValue" then
 			local value = { ClassName = "StringValue", Name = "StringValue", Value = "", Parent = nil }
 			function value.IsA(_, queried)
@@ -523,6 +787,10 @@ function rbx.addPlayer(name, position)
 	local character = newContainer("Model")
 	character.Name = name
 	character:Add(hrp)
+	-- Parented, because library code checks `character.Parent` before acting on it -- a
+	-- character that has been torn down mid-defer must not be resolved. An unparented
+	-- character silently fails that guard and nothing spawns.
+	rbx.workspace:Add(character)
 	local characterAdded, fireCharacterAdded = makeSignal()
 	local characterRemoving, fireCharacterRemoving = makeSignal()
 	local player = {
@@ -538,6 +806,29 @@ function rbx.addPlayer(name, position)
 	table.insert(playerList, player)
 	firePlayerAdded(player)
 	return player
+end
+
+--[[
+	A fresh character, for driving a respawn:
+
+	  local reborn = rbx.newCharacter("Ana")
+	  player.Character = reborn
+	  player._fireCharacterAdded(reborn)
+
+	Built the same way addPlayer builds the first one, so a respawned character is not a
+	different shape from the original -- which is exactly the difference a respawn bug
+	would hide in.
+]]
+function rbx.newCharacter(name, position)
+	local hrp = newPart()
+	hrp.Name = "HumanoidRootPart"
+	hrp.CFrame = cf(position or v3(0, 0, 0), 0)
+	hrp.Position = position or v3(0, 0, 0)
+	local character = newContainer("Model")
+	character.Name = name
+	character:Add(hrp)
+	rbx.workspace:Add(character)
+	return character
 end
 
 function rbx.movePlayer(player, position)

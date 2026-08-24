@@ -13,8 +13,9 @@ Server-owned pet/companion system: models are cloned out of `ReplicatedStorage`,
   two level 2s, and a collection screen lists those as two entries.
 - **Slots are identified**, not counted. A companion is equipped *into* `"Slot2"` and the record
   says so.
-- **No combat.** Nothing here shoots, swings, damages or raycasts, and pets are explicitly
-  configured not to block the host's raycasts. What a companion *does* is a tick hook.
+- **No combat.** Nothing here shoots, swings, damages or raycasts (bar finding the floor for a
+  ground-walking pet), and following pets are configured not to block the host's raycasts.
+  What a companion *does* is a tick hook.
 - **No UI, no copy.** Refusals come back as reasons for the host to word.
 - **No in-run levelling.** A level is a permanent property of an owned copy. Raising one is what
   the addons are for.
@@ -32,8 +33,11 @@ Server-owned pet/companion system: models are cloned out of `ReplicatedStorage`,
 | `src/Slots.luau` | Resolves a character's attachment positions. |
 | `src/Ticker.luau` | Per-pet tick scheduling. |
 
-Tests: `Tests/tests/test-companions-loadout.luau` (99 checks, the pure record layer) and
-`Tests/tests/test-companions.luau` (55, the public API and persistence) — headless, no Studio.
+Movement modes, the idle loop and one-shot actions are covered below.
+
+Tests: `test-companions-loadout.luau` (103 checks, the pure record layer),
+`test-companions.luau` (75, the public API, persistence and the per-pet hooks) and `test-companions-rig.luau`
+(54, follow modes and animation) — all headless, no Studio.
 
 ## Quick start
 
@@ -173,6 +177,127 @@ persistence = {
 `load` may return anything at all: it goes through `sanitise`, which repairs what it can and drops
 what it cannot, then `reconcile`. So a host may hand over a raw DataStore table without checking
 it. **A load never triggers a save** — otherwise every join would write.
+
+## Per-pet hooks: where host state belongs
+
+```lua
+Companions.onSpawned(function(context)
+    health[context.uid] = 100
+end)
+
+Companions.onDespawned(function(context)
+    health[context.uid] = nil
+end)
+```
+
+`context` is `{ player, petId, uid, slotId, model, root, level, settings }`.
+
+**`onSpawned` fires per BODY, not per equip** — including a character respawn, which rebuilds
+rigs without the loadout changing at all. A listener hung on `onEquippedChanged` would
+initialise once and never again, and its state would silently carry over from a previous life.
+
+**Key on `uid`, not on `slotId` or `petId`.** A `uid` is unique per live pet and changes when
+one respawns, so state about the previous body stops applying by construction rather than by
+the host remembering to clear it. A slot, by contrast, can be refilled by a different body.
+
+**`onDespawned` fires before the model is destroyed**, so a listener can read where the pet
+ended up. It covers every way a pet goes away: unequipped, its copy consumed by a merge or a
+trade, its owner's character dying, or the player leaving.
+
+Listeners are `task.spawn`ed, like every other hook here — host code may yield and must not be
+able to fail the spawn or teardown that told it. The consequence for `onDespawned` is worth
+knowing: **a listener that yields resumes to find the model destroyed**, so read what you need
+before you wait on anything.
+
+### There is no health, deliberately
+
+Nothing in this package tracks damage or hit points, and nothing can kill a companion. Health
+is a game's rule, not a companion system's — what it means to die, whether death unequips the
+slot or leaves a corpse, whether it persists across a respawn. These two hooks plus `uid` are
+what a host needs to build it, and `unequip(player, slotId)` is how it removes the loser.
+
+## Movement modes
+
+`followMode`, per companion:
+
+| | |
+|---|---|
+| **`Float`** *(default)* | `AlignPosition` + `AlignOrientation` onto the character's slot attachment. Hangs in the air, collides with nothing. Add `bobAmplitude` for an idle bob. |
+| **`Ground`** | the same constraints, aimed at the floor *below* the slot, so the pet walks along it. |
+| **`Weld`** | rigidly locked to the slot. No drift, no lag, no life. |
+| **`Detached`** | no attachment claimed and no constraints at all. |
+
+### Ground finds the floor by ray, not by gravity
+
+The obvious implementation is to make a ground pet collide with the world and let gravity
+hold it down. That needs a **collision group this package cannot create**, and a collidable
+pet shoves its owner, shoves other pets, and wedges itself in doorways.
+
+Instead the existing `AlignPosition` is switched to one-attachment mode and aimed at a point
+found by a downward ray. The pet stays as inert as a floating one, and the whole mode is
+testable without a physics world.
+
+The ray is **throttled**, not per-frame (`Config.groundInterval`, default 0.1s): the floor
+under a running player changes slowly next to 60Hz. The pet still *moves* smoothly between
+checks, because the constraint interpolates — only the target is stepped. A pet over a chasm
+keeps its last known height rather than diving after the floor.
+
+`Companions.setRaycast(fn)` replaces the finder. "Where is the floor" is a question about the
+world, and a game with voxel terrain or a moving platform layer answers it better than a
+raycast does.
+
+Orientation still follows the slot in **both** modes — the floor has nothing to say about
+which way a pet faces.
+
+### Detached is defined by its absence
+
+No attachment, no constraints, placed where the character stands and then left alone.
+Everything else about it is ordinary: it fills a loadout slot, it ticks, and it despawns with
+the slot and with the character. **Only its movement is the host's.**
+
+```lua
+local rig = Companions.getPet(player, "Slot1")   -- rig.model, rig.root
+Companions.setPhysics(player, "Slot1", { canCollide = true, canQuery = true })
+```
+
+A following pet is decoration and is built inert on purpose — it must not block the host's
+raycasts or trip its collision handlers. A detached one may be a mount, a turret or a
+vehicle, and none of those work inert, so the host says what it needs. Only the fields given
+are applied, so turning collision on does not silently also make the pet queryable.
+
+## Animation
+
+### The idle loop
+
+Supply an `animationId` and that is the whole configuration:
+
+```lua
+Companions.definePet("Knight", { settings = { animationId = "rbxassetid://123" } })
+```
+
+`loopAnimation` is three-valued: **nil** (the default) plays a loop if there is one to play;
+**true** means there had better be one, and warns when there is not; **false** stays static
+even when an animation is authored inside the model. An `Animation` instance inside the model
+works as well as an id, via `animationName` or simply the first one found.
+
+### One-shot actions
+
+```lua
+Companions.playAction(player, "Slot1", "rbxassetid://swing")
+```
+
+Plays over the idle loop and hands back when it ends. **By slot, not by pet id** — two copies
+of one companion may be out at once, and "make the Knight swing" would not say which.
+
+The loop is **weighted out, not stopped**. Stopping it would restart it from frame zero on
+the way back, so a pet that acts twice would visibly reset its idle in between. A second
+action **replaces** the first rather than layering: two one-shots at once produce a pose
+neither animation describes.
+
+`stopAction` cuts one short, and the loop returns through the track's `Stopped` — one path
+back rather than two that could disagree. `isPlayingAction` reports the state. Animation
+instances are cached per rig by asset id, so a pet that swings a thousand times does not
+accumulate a thousand `Animation` children.
 
 ## Levels
 

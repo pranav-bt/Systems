@@ -8,6 +8,7 @@
 -- the shim rather than the library.
 local rbx = require("./shim/roblox")
 local Companions = require("./shim/library")("Companions")
+local task = require("@lune/task")
 
 local passed, failed = 0, 0
 local function check(name, ok, detail)
@@ -206,6 +207,120 @@ do
 	check("and the load did not trigger a save", saved[returning] == nil)
 	rbx.reset()
 end
+
+print("spawn and despawn signals, per LIVE PET")
+do
+	-- These need real rigs, so a character and its slot schema have to exist -- which is
+	-- deferred inside the library, hence the waits.
+	local seen = { spawned = {}, despawned = {} }
+	Companions.onSpawned(function(context)
+		table.insert(seen.spawned, context)
+	end)
+	Companions.onDespawned(function(context)
+		table.insert(seen.despawned, context)
+		--[[
+			Sampled AT CALL TIME, not afterwards. The context holds a reference to the model
+			whether or not it has been destroyed, so asking later cannot tell the two apart --
+			only asking while the listener runs can.
+		]]
+		seen.aliveAtCall = context.model.Parent ~= nil
+	end)
+
+	local player = rbx.addPlayer("Ivy")
+	task.wait()
+	Companions.grant(player, "Knight", 1, 2)
+	Companions.equip(player, "Slot1", "Knight")
+	task.wait()
+
+	check("equipping announced a spawn", #seen.spawned == 1, #seen.spawned)
+	local spawned = seen.spawned[1]
+	check("it names the loadout slot, not the attachment", spawned.slotId == "Slot1", spawned.slotId)
+	check("and the companion", spawned.petId == "Knight")
+	check("and its level", spawned.level == 1)
+	check("with the body to hang state on", spawned.model ~= nil and spawned.root ~= nil)
+	check("and a uid", type(spawned.uid) == "string" and spawned.uid ~= "")
+	check("which is the rig that is actually out", Companions.getPet(player, "Slot1").uid == spawned.uid)
+
+	Companions.unequip(player, "Slot1")
+	task.wait()
+	check("unequipping announced a despawn", #seen.despawned == 1, #seen.despawned)
+	check("for the same body", seen.despawned[1].uid == spawned.uid)
+	check("naming the slot it left", seen.despawned[1].slotId == "Slot1")
+	-- Fired BEFORE the model is destroyed, so a listener can read where the pet ended up.
+	check("and the model was still alive when the listener ran", seen.aliveAtCall == true, seen.aliveAtCall)
+
+	rbx.removePlayer(player)
+	task.wait()
+end
+
+print("a character respawn announces new bodies -- the case an equip listener misses")
+do
+	local spawns, despawns = {}, {}
+	Companions.onSpawned(function(context)
+		table.insert(spawns, context)
+	end)
+	Companions.onDespawned(function(context)
+		table.insert(despawns, context)
+	end)
+
+	local player = rbx.addPlayer("Jo")
+	task.wait()
+	Companions.grant(player, "Knight")
+	Companions.equip(player, "Slot1", "Knight")
+	task.wait()
+	local first = spawns[1]
+	check("the first body was announced", first ~= nil)
+
+	-- Respawn: the loadout does not change at all, so nothing equip-shaped fires.
+	local before = #spawns
+	local reborn = rbx.newCharacter("Jo")
+	player.Character = reborn
+	player._fireCharacterAdded(reborn)
+	task.wait()
+	task.wait()
+
+	check("the old body was announced as despawned", #despawns >= 1, #despawns)
+	check("and a new one as spawned", #spawns == before + 1, #spawns)
+	local second = spawns[#spawns]
+	check("into the same loadout slot", second.slotId == "Slot1")
+	--[[
+		A DIFFERENT uid, which is the whole reason to key host state on it: state about the
+		previous body stops applying by construction rather than by the host remembering to
+		clear it.
+	]]
+	check("but with a different uid", second.uid ~= first.uid, `{first.uid} vs {second.uid}`)
+
+	rbx.removePlayer(player)
+	task.wait()
+end
+
+print("a merge that eats a fielded copy announces the despawn")
+do
+	local despawns = {}
+	Companions.onDespawned(function(context)
+		table.insert(despawns, context)
+	end)
+
+	local player = rbx.addPlayer("Kit")
+	task.wait()
+	Companions.grant(player, "Knight", 1, 2)
+	Companions.equip(player, "Slot1", "Knight")
+	task.wait()
+	check("one is out", Companions.getPet(player, "Slot1") ~= nil)
+
+	-- Consumes both copies, including the one standing there. reconcile empties the slot
+	-- and the body goes with it -- which a host tracking health has to hear about.
+	local before = #despawns
+	Companions.moveCopies(player, "Knight", 1, 2, 2)
+	task.wait()
+	check("the fielded copy's body was announced", #despawns == before + 1, #despawns - before)
+	check("naming the slot it vacated", despawns[#despawns].slotId == "Slot1")
+	check("and the slot really is empty", Companions.getPet(player, "Slot1") == nil)
+
+	rbx.removePlayer(player)
+	task.wait()
+end
+
 
 print(("\n%d passed, %d failed"):format(passed, failed))
 if failed > 0 then

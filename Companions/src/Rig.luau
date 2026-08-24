@@ -13,7 +13,7 @@ local Slots = require(script.Parent.Slots)
 export type Rig = {
 	uid: string,
 	petId: string,
-	slotKey: string,
+	slotKey: string?, -- nil for a Detached pet, which claims no attachment
 	level: number,
 	settings: Config.PetSettings, -- resolved for `level`; re-resolved and re-applied on a change
 	model: Model,
@@ -21,7 +21,25 @@ export type Rig = {
 	anchor: Attachment, -- point pinned to the slot; the bob loop animates its offset
 	bobBase: Vector3,
 	bobPhase: number, -- per-pet phase shift so a group of pets does not bob in lockstep
+	-- The idle loop, playing for as long as the pet is out.
 	track: AnimationTrack?,
+	-- A one-shot action currently overriding the loop, and the Animation instances loaded
+	-- for this rig so far, cached by asset id: LoadAnimation is cheap the second time but
+	-- a fresh Animation instance per action would litter the model.
+	actionTrack: AnimationTrack?,
+	actionConnection: RBXScriptConnection?,
+	animations: { [string]: Animation },
+	-- Ground mode only: when the floor under this pet was last looked for, and where it
+	-- was. Kept so a pet over a chasm holds its last known height instead of diving.
+	groundCheckedAt: number,
+	groundY: number?,
+	-- The character attachment this pet is following. Held for Ground mode, which needs the
+	-- slot's world position to look DOWN from -- its own AlignPosition target is the floor,
+	-- so it cannot be asked where the slot is.
+	slotAttachment: Attachment?,
+	-- Who this pet follows. Held so per-frame work can reach the character without the
+	-- caller threading a player through every step.
+	owner: Player?,
 	-- Kept so a level change can retune the follow without rebuilding the pet. nil in Weld mode.
 	alignPosition: AlignPosition?,
 	alignOrientation: AlignOrientation?,
@@ -269,10 +287,23 @@ local function resolveAnimation(model: Model, settings: Config.PetSettings): Ani
 	return model:FindFirstChildWhichIsA("Animation", true) :: Animation?
 end
 
+--[[
+	The idle loop.
+
+	`loopAnimation` is three-valued on purpose. nil means "play one if there is one", so
+	supplying an animationId is the whole configuration; true means "there had better be
+	one" and warns when there is not; false means static even when an animation is
+	authored inside the model.
+]]
 local function playLoop(petId: string, model: Model, settings: Config.PetSettings): AnimationTrack?
+	if settings.loopAnimation == false then
+		return nil
+	end
 	local animation = resolveAnimation(model, settings)
 	if not animation then
-		warn(`[Companions] Pet "{petId}" has loopAnimation set but no Animation to play; spawning it static.`)
+		if settings.loopAnimation == true then
+			warn(`[Companions] Pet "{petId}" has loopAnimation set but no Animation to play; spawning it static.`)
+		end
 		return nil
 	end
 
@@ -303,12 +334,15 @@ end
 function Rig.build(
 	entry: Catalog.Entry,
 	settings: Config.PetSettings,
-	slot: Slots.Slot,
+	slot: Slots.Slot?,
 	container: Instance,
 	owner: Player?,
 	uid: string,
 	rng: Random,
-	level: number
+	level: number,
+	-- Where to put a pet that has no slot to sit on -- a Detached one. Ignored when a slot
+	-- is given, because then the slot says where.
+	origin: CFrame?
 ): Rig?
 	local model = entry.model:Clone()
 	local root = findRoot(model)
@@ -333,8 +367,10 @@ function Rig.build(
 	anchor.Parent = root
 
 	-- Place the pet so its anchor already sits on the slot; constraints then have nothing
-	-- to correct and the pet does not visibly fly in from the model's authored position.
-	local target = slot.attachment.WorldCFrame * anchor.CFrame:Inverse()
+	-- to correct and the pet does not visibly fly in from the model's authored position. A
+	-- pet with no slot is placed at `origin` and left there for the host to move.
+	local placement = if slot then slot.attachment.WorldCFrame else (origin or CFrame.new())
+	local target = placement * anchor.CFrame:Inverse()
 	local pivotToRoot = model:GetPivot():ToObjectSpace(root.CFrame)
 	model:PivotTo(target * pivotToRoot:Inverse())
 	model.Parent = container
@@ -346,24 +382,48 @@ function Rig.build(
 	local alignPosition: AlignPosition? = nil
 	local alignOrientation: AlignOrientation? = nil
 
-	if settings.followMode == "Weld" then
-		local slotPart = slot.attachment.Parent :: BasePart
-		local weld = Instance.new("WeldConstraint")
-		weld.Name = "PetSlotWeld"
-		weld.Part0 = root
-		weld.Part1 = slotPart
-		weld.Parent = root
-	else
+	local mode = settings.followMode
+	--[[
+		A Detached pet gets NOTHING below -- no constraint, no weld, no attachment claimed.
+		The host owns where it is, and anything built here would fight that. It is the one
+		mode defined by its absence, which is why it reads as a condition rather than a
+		branch of its own.
+	]]
+	if mode == "Weld" then
+		local slotPart = if slot then slot.attachment.Parent :: BasePart else nil
+		if slotPart then
+			local weld = Instance.new("WeldConstraint")
+			weld.Name = "PetSlotWeld"
+			weld.Part0 = root
+			weld.Part1 = slotPart
+			weld.Parent = root
+		end
+	elseif mode ~= "Detached" and slot then
 		local position = Instance.new("AlignPosition")
 		position.Name = "PetFollowPosition"
 		position.Attachment0 = anchor
-		position.Attachment1 = slot.attachment
+		if mode == "Ground" then
+			--[[
+				ONE attachment, because the target is not the slot.
+
+				A ground pet aims at the point on the FLOOR below its slot, and no attachment
+				on the character describes that point -- it depends on the world, not on the
+				rig. So the constraint is given a world Position that the ground loop steps,
+				rather than a second attachment to chase.
+			]]
+			position.Mode = Enum.PositionAlignmentMode.OneAttachment
+			position.Position = slot.attachment.WorldPosition
+		else
+			position.Attachment1 = slot.attachment
+		end
 		position.RigidityEnabled = false
 		position.ReactionForceEnabled = false
 		position.Responsiveness = settings.responsiveness
 		position.MaxForce = settings.maxForce
 		position.Parent = root
 
+		-- Orientation still follows the slot in BOTH modes: a ground pet should face the way
+		-- its owner does, and the floor has nothing to say about that.
 		local orientation = Instance.new("AlignOrientation")
 		orientation.Name = "PetFollowOrientation"
 		orientation.Attachment0 = anchor
@@ -387,12 +447,12 @@ function Rig.build(
 		pcall(root.SetNetworkOwner, root, nil)
 	end
 
-	local track: AnimationTrack? = if settings.loopAnimation then playLoop(entry.id, model, settings) else nil
+	local track: AnimationTrack? = playLoop(entry.id, model, settings)
 
 	return {
 		uid = uid,
 		petId = entry.id,
-		slotKey = slot.key,
+		slotKey = if slot then slot.key else nil,
 		level = level,
 		settings = settings,
 		model = model,
@@ -401,6 +461,13 @@ function Rig.build(
 		bobBase = settings.anchorOffset,
 		bobPhase = rng:NextNumber() * math.pi * 2,
 		track = track,
+		actionTrack = nil,
+		actionConnection = nil,
+		animations = {},
+		groundCheckedAt = 0,
+		groundY = nil,
+		slotAttachment = if slot then slot.attachment else nil,
+		owner = owner,
 		alignPosition = alignPosition,
 		alignOrientation = alignOrientation,
 	}
@@ -471,7 +538,173 @@ function Rig.applySettings(rig: Rig, settings: Config.PetSettings)
 	end
 end
 
+-- ── Action animations ─────────────────────────────────────────────────────────
+
+-- Clears whatever action is playing and unhooks its listener. Separate from resuming the
+-- loop, because stopping and handing back are different moments -- an interrupting action
+-- wants the first without the second.
+local function clearAction(rig: Rig)
+	local connection = rig.actionConnection
+	if connection then
+		connection:Disconnect()
+		rig.actionConnection = nil
+	end
+	local action = rig.actionTrack
+	if action then
+		if action.IsPlaying then
+			action:Stop(rig.settings.actionFadeTime)
+		end
+		rig.actionTrack = nil
+	end
+end
+
+-- Cached per rig by asset id: LoadAnimation is cheap the second time, but a fresh
+-- Animation instance for every swing would litter the model with hundreds of them.
+local function animationFor(rig: Rig, animationId: string): Animation
+	local existing = rig.animations[animationId]
+	if existing then
+		return existing
+	end
+	local animation = Instance.new("Animation")
+	animation.Name = `PetAction_{animationId}`
+	animation.AnimationId = animationId
+	animation.Parent = rig.model
+	rig.animations[animationId] = animation
+	return animation
+end
+
+--[[
+	Plays a one-shot animation over the idle loop, and hands back to the loop when it ends.
+
+	THE LOOP IS PAUSED, NOT STOPPED. Stopping it would restart it from frame zero on the
+	way back, so a pet that swings twice visibly resets its idle in between. AnimationTrack
+	has no pause, so the loop is weighted out and back instead -- which is also what makes
+	the crossfade read as one motion rather than two.
+
+	An action already playing is REPLACED. A second call means the pet is doing something
+	new, and layering two one-shots produces a pose neither animation describes.
+
+	Returns false when the animation cannot be loaded, which is a content error rather than
+	a runtime one -- so it warns and the pet carries on idling.
+]]
+function Rig.playAction(rig: Rig, animationId: string, speed: number?, fadeTime: number?): boolean
+	if type(animationId) ~= "string" or animationId == "" then
+		return false
+	end
+	local fade = fadeTime or rig.settings.actionFadeTime
+
+	local animator = resolveAnimator(rig.model)
+	local ok, result = pcall(function()
+		return animator:LoadAnimation(animationFor(rig, animationId))
+	end)
+	if not ok then
+		warn(`[Companions] Pet "{rig.petId}" could not load action "{animationId}": {result}`)
+		return false
+	end
+
+	clearAction(rig)
+
+	local action = result :: AnimationTrack
+	action.Looped = false
+	action.Priority = Enum.AnimationPriority.Action
+	rig.actionTrack = action
+
+	local loop = rig.track
+	if loop and loop.IsPlaying then
+		loop:AdjustWeight(0, fade)
+	end
+
+	--[[
+		Hooked BEFORE Play, and to Stopped rather than Ended.
+
+		Stopped fires for an interrupted track as well as a finished one, which is what the
+		handing-back belongs to: the loop has to come back either way.
+
+		The identity guard below is the SECOND line and not the first -- clearAction
+		disconnects before it stops, so a replaced action's handler does not run at all.
+		Mutation testing confirmed that: removing the guard changes nothing today. It stays
+		because the thing keeping it unreachable is an ordering inside another function, and
+		that is a thin guarantee to hang "the loop weights up underneath a live action" on.
+	]]
+	rig.actionConnection = action.Stopped:Connect(function()
+		if rig.actionTrack ~= action then
+			return
+		end
+		rig.actionTrack = nil
+		local resumed = rig.track
+		if resumed then
+			if not resumed.IsPlaying then
+				resumed:Play(fade)
+			end
+			resumed:AdjustWeight(1, fade)
+		end
+	end)
+
+	action:Play(fade)
+	if speed and speed ~= 1 then
+		action:AdjustSpeed(speed)
+	end
+	return true
+end
+
+-- Cuts an action short and hands straight back to the loop. Safe when nothing is playing.
+function Rig.stopAction(rig: Rig)
+	local action = rig.actionTrack
+	if not action then
+		return
+	end
+	-- Stop() fires Stopped, and the handler above is what restores the loop -- so this does
+	-- not restore it itself. One path back, not two that can disagree.
+	action:Stop(rig.settings.actionFadeTime)
+end
+
+function Rig.isPlayingAction(rig: Rig): boolean
+	local action = rig.actionTrack
+	return action ~= nil and action.IsPlaying
+end
+
+-- ── Physics ───────────────────────────────────────────────────────────────────
+
+export type PhysicsSpec = {
+	canCollide: boolean?,
+	canQuery: boolean?,
+	canTouch: boolean?,
+	anchored: boolean?,
+}
+
+--[[
+	Sets physics properties across every part of a pet.
+
+	FOR DETACHED PETS, mostly. A pet following its owner is decoration and is deliberately
+	built inert -- it must not block the host's raycasts or trip its collision handlers. A
+	detached one may well be a mount, a turret or a vehicle, and none of those work inert,
+	so the host says what it needs rather than this package guessing.
+
+	Only the fields given are applied, so turning collision on does not silently also make
+	the pet queryable.
+]]
+function Rig.setPhysics(rig: Rig, spec: PhysicsSpec)
+	for _, descendant in rig.model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			if spec.canCollide ~= nil then
+				descendant.CanCollide = spec.canCollide
+			end
+			if spec.canQuery ~= nil then
+				descendant.CanQuery = spec.canQuery
+			end
+			if spec.canTouch ~= nil then
+				descendant.CanTouch = spec.canTouch
+			end
+			if spec.anchored ~= nil then
+				descendant.Anchored = spec.anchored
+			end
+		end
+	end
+end
+
 function Rig.destroy(rig: Rig)
+	clearAction(rig)
+	table.clear(rig.animations)
 	if rig.track then
 		rig.track:Stop()
 		rig.track:Destroy()

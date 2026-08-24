@@ -10,15 +10,16 @@ lune run Tests/tests/test-zone.luau           # geometry, ticker, lifecycle     
 lune run Tests/tests/test-zone-types.luau     # subject-type registry           91
 lune run Tests/tests/test-zone-signals.luau   # event identity and isolation    30
 lune run Tests/tests/test-community-reward.luau  # claim flow, once and only once  51
-lune run Tests/tests/test-companions-loadout.luau # the record layer, pure         99
-lune run Tests/tests/test-companions.luau        # public API and persistence      55
+lune run Tests/tests/test-companions-loadout.luau # the record layer, pure        103
+lune run Tests/tests/test-companions.luau        # public API, persistence, hooks  75
 lune run Tests/tests/test-companions-addons.luau # merge and pay-to-level          66
+lune run Tests/tests/test-companions-rig.luau    # follow modes and animation      54
 lune run Tests/tests/test-mech.luau           # AI suite: Mech archetype        18
 lune run Tests/tests/test-castle.luau         # AI suite: Castle archetype      19
 lune run Tests/tests/test-bnb.luau            # AI suite: BnB archetype         21
 ```
 
-543 checks at present, all passing. Each file prints `N passed, M failed` and exits non-zero
+617 checks at present, all passing. Each file prints `N passed, M failed` and exits non-zero
 on failure.
 
 ## Layout

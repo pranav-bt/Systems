@@ -48,6 +48,13 @@
 --   equippedAt(player, slotId) -> { petId, level }?
 --   equippedSlots(player)      -> { slotId }, in declared order
 --   slotOf(player, petId, level?)  -> slotId?
+--   onSpawned(listener) / onDespawned(listener)   per LIVE PET, keyed by uid -- where
+--                              host-side state like health, nameplates or VFX belongs
+--   getPet(player, slotId)     -> the live rig, for moving a Detached companion
+--   playAction(player, slotId, animationId, speed?, fadeTime?)  -> boolean
+--   stopAction / isPlayingAction(player, slotId)
+--   setPhysics(player, slotId, { canCollide?, canQuery?, canTouch?, anchored? })
+--   setRaycast(fn?)            replace how Ground mode finds the floor
 --   getMaxLevel(petId)         -> number
 --   getCatalogIds()            -> { petId }
 --   reloadCatalog()            -> number; re-reads the asset folder after models are added
@@ -102,7 +109,7 @@ export type LevelContext = {
 	uid: string,
 	model: Model,
 	root: BasePart,
-	slotKey: string,
+	slotKey: string?,
 	level: number,
 	previousLevel: number,
 	settings: Config.PetSettings,
@@ -126,11 +133,32 @@ export type LevelListener = (context: LevelContext) -> ()
 -- being told about.
 export type RecordListener = (player: Player, record: Loadout.Record) -> ()
 
+--[[
+	One live pet, at the moment it appears or disappears.
+
+	`slotId` is the LOADOUT slot -- the one getPet, playAction and setPhysics take -- and not
+	the character attachment the pet happens to sit on. `uid` is unique per live pet and is
+	the key to hang per-pet state on: it changes when a pet respawns, which is exactly when
+	state about the previous body should stop applying.
+]]
+export type PetContext = {
+	player: Player,
+	petId: string,
+	uid: string,
+	slotId: string,
+	model: Model,
+	root: BasePart,
+	level: number,
+	settings: Config.PetSettings,
+}
+
+export type PetListener = (context: PetContext) -> ()
+
 export type PetInfo = {
 	uid: string,
 	petId: string,
 	level: number,
-	slotKey: string,
+	slotKey: string?,
 }
 
 type PlayerState = {
@@ -157,11 +185,16 @@ local _started = false
 local _levelHooks: { [string]: LevelHandler } = {}
 local _levelListeners: { LevelListener } = {}
 local _equippedListeners: { RecordListener } = {}
+local _spawnedListeners: { PetListener } = {}
+local _despawnedListeners: { PetListener } = {}
 
 -- Only pets with a non-zero bobAmplitude land here, so the default configuration never
 -- connects the per-frame loop at all.
-local _bobbing: { Rig.Rig } = {}
-local _bobConnection: RBXScriptConnection? = nil
+-- Pets needing per-frame attention: the ones that bob, the ones that walk on the ground,
+-- or both. A pet that does neither -- the default -- never reaches this list, so the
+-- default configuration connects no per-frame work at all.
+local _driven: { Rig.Rig } = {}
+local _driveConnection: RBXScriptConnection? = nil
 
 -- ── Container ─────────────────────────────────────────────────────────────────
 
@@ -197,44 +230,173 @@ local function playerContainer(player: Player): Folder
 	return folder
 end
 
+-- ── Ground mode ───────────────────────────────────────────────────────────────
+
+--[[
+	Where the floor is, under a point. Injectable.
+
+	A DOWNWARD RAY AND NOT GRAVITY. Letting a ground pet fall onto the floor would mean
+	making it collide with the world, which needs a collision group this package cannot
+	create -- and a collidable pet shoves its owner, shoves other pets, and gets wedged in
+	doorways. Aiming the existing constraint at a point found by a ray keeps the pet as
+	inert as a floating one, and keeps the whole mode testable without a physics world.
+
+	Replaceable because "where is the floor" is a question about the world, and a game with
+	a voxel terrain or a moving platform layer answers it better than a raycast does.
+]]
+local _raycast: ((origin: Vector3, direction: Vector3) -> number?)? = nil
+
+--[[
+	Sets the ground finder. The function is handed a world origin and a downward vector and
+	returns the surface's Y, or nil for "nothing down there".
+
+	nil restores the default, which raycasts against everything except the pet container and
+	the owner's own character -- a pet must not stand on itself or on the head of the player
+	it is following.
+]]
+function Companions.setRaycast(finder: ((origin: Vector3, direction: Vector3) -> number?)?)
+	_raycast = finder
+end
+
+local function defaultRaycast(origin: Vector3, direction: Vector3, ignore: { Instance }): number?
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignore
+	params.IgnoreWater = true
+	local hit = workspace:Raycast(origin, direction, params)
+	return if hit then hit.Position.Y else nil
+end
+
+--[[
+	Steps one ground pet's target, if it is due for a look.
+
+	Throttled rather than per-frame: the floor under a running player changes slowly next to
+	60Hz, and a ray per pet per frame buys nothing. The pet still MOVES smoothly between
+	checks, because the constraint interpolates toward the target -- only the target is
+	stepped.
+]]
+local function stepGround(rig: Rig.Rig, now: number, character: Model?)
+	local align = rig.alignPosition
+	local anchorPart = rig.root
+	if not align or anchorPart.Parent == nil then
+		return
+	end
+	local settings = rig.settings
+	if now - rig.groundCheckedAt < settings.groundInterval then
+		return
+	end
+	rig.groundCheckedAt = now
+
+	-- Above the slot, looking down: the slot is where the pet WOULD hang, so the floor
+	-- below it is where it should stand.
+	local from = align.Position
+	local slotAttachment = rig.slotAttachment
+	if slotAttachment and slotAttachment.Parent then
+		from = slotAttachment.WorldPosition
+	end
+
+	local down = -Vector3.yAxis * settings.groundDistance
+	local surface: number?
+	if _raycast then
+		surface = _raycast(from, down)
+	else
+		local ignore: { Instance } = { rig.model }
+		if character then
+			table.insert(ignore, character)
+		end
+		surface = defaultRaycast(from, down, ignore)
+	end
+
+	if surface then
+		rig.groundY = surface
+	end
+	-- No floor found keeps the last known height: a pet crossing a gap should not dive
+	-- after it, and the next check will find the far side.
+	local y = rig.groundY
+	align.Position = if y then Vector3.new(from.X, y + settings.groundOffset, from.Z) else from
+end
+
 -- ── Idle bob ──────────────────────────────────────────────────────────────────
 
-local function stepBobbing()
-	debug.profilebegin("Companions.bob")
+--[[
+	Tells listeners a pet appeared or is about to disappear.
+
+	Spawned once per BODY and not once per equip, because a character respawn builds new
+	rigs without the loadout changing at all -- a host that only heard about equips would
+	initialise its per-pet state once and never again.
+
+	Despawn fires BEFORE the model is destroyed, so a listener can read where the pet ended
+	up. As everywhere else here, listeners are spawned rather than called: host code may
+	yield, and must not be able to fail the spawn or the teardown that told it. The
+	consequence is worth knowing -- a despawn listener that YIELDS resumes to find the model
+	already destroyed, so anything it needs off the rig has to be read first.
+]]
+local function announce(listeners: { PetListener }, player: Player, slotId: string, rig: Rig.Rig)
+	if #listeners == 0 then
+		return
+	end
+	local context: PetContext = {
+		player = player,
+		petId = rig.petId,
+		uid = rig.uid,
+		slotId = slotId,
+		model = rig.model,
+		root = rig.root,
+		level = rig.level,
+		settings = rig.settings,
+	}
+	for _, listener in listeners do
+		task.spawn(listener, context)
+	end
+end
+
+local function needsDriving(rig: Rig.Rig): boolean
+	return rig.settings.bobAmplitude > 0 or rig.settings.followMode == "Ground"
+end
+
+local function stepDriven()
+	debug.profilebegin("Companions.drive")
 	local now = os.clock()
-	for index = #_bobbing, 1, -1 do
-		local rig = _bobbing[index]
+	for index = #_driven, 1, -1 do
+		local rig = _driven[index]
 		if rig.anchor.Parent == nil then
-			table.remove(_bobbing, index)
+			table.remove(_driven, index)
 			continue
 		end
+		-- A level change can switch bobbing off or change the mode. Rig.applySettings has
+		-- already parked the anchor back on its slot, so there is nothing left to drive.
+		if not needsDriving(rig) then
+			table.remove(_driven, index)
+			continue
+		end
+
 		local settings = rig.settings
-		-- A level change can switch bobbing off. Rig.applySettings already parked the anchor
-		-- back on its slot, so there is nothing left to drive.
-		if settings.bobAmplitude <= 0 then
-			table.remove(_bobbing, index)
-			continue
+		if settings.bobAmplitude > 0 then
+			local wave = math.sin(now * settings.bobFrequency * math.pi * 2 + rig.bobPhase)
+			-- The anchor is the point pinned to the slot, so lowering it raises the pet.
+			rig.anchor.Position = rig.bobBase - Vector3.yAxis * wave * settings.bobAmplitude
 		end
-		local wave = math.sin(now * settings.bobFrequency * math.pi * 2 + rig.bobPhase)
-		-- The anchor is the point pinned to the slot, so lowering it raises the pet.
-		rig.anchor.Position = rig.bobBase - Vector3.yAxis * wave * settings.bobAmplitude
+		if settings.followMode == "Ground" then
+			local owner = rig.owner
+			stepGround(rig, now, if owner then owner.Character else nil)
+		end
 	end
 	debug.profileend()
 
-	if #_bobbing == 0 and _bobConnection then
-		_bobConnection:Disconnect()
-		_bobConnection = nil
+	if #_driven == 0 and _driveConnection then
+		_driveConnection:Disconnect()
+		_driveConnection = nil
 	end
 end
 
 -- Idempotent: a level change re-offers pets that may already be bobbing.
-local function addBobbing(rig: Rig.Rig)
-	if table.find(_bobbing, rig) then
+local function addDriven(rig: Rig.Rig)
+	if not needsDriving(rig) or table.find(_driven, rig) then
 		return
 	end
-	table.insert(_bobbing, rig)
-	if not _bobConnection then
-		_bobConnection = RunService.Heartbeat:Connect(stepBobbing)
+	table.insert(_driven, rig)
+	if not _driveConnection then
+		_driveConnection = RunService.Heartbeat:Connect(stepDriven)
 	end
 end
 
@@ -253,8 +415,10 @@ local function despawnRig(state: PlayerState, uid: string)
 	state.rigs[uid] = nil
 	-- The slot this rig was serving is free again. Left behind, the stale uid would make
 	-- syncPets believe the slot is still filled and it would never respawn.
+	local served: string? = nil
 	for slotId, servingUid in state.bySlot do
 		if servingUid == uid then
+			served = slotId
 			state.bySlot[slotId] = nil
 		end
 	end
@@ -263,6 +427,12 @@ local function despawnRig(state: PlayerState, uid: string)
 		Slots.release(set, uid)
 	end
 	Ticker.detach(rig)
+	-- After detaching, so no tick can run inside a listener; before destroying, so a
+	-- listener can still read the body.
+	local owner = rig.owner
+	if owner and served then
+		announce(_despawnedListeners, owner, served, rig)
+	end
 	Rig.destroy(rig)
 end
 
@@ -301,7 +471,16 @@ end
 -- Spawns one pet onto a slot that has already been decided. Shared by the equip path (which claims a
 -- slot from the character's schema) and the upgrade path (which makes its own beside the leader), so
 -- the two cannot drift apart in how a pet is built.
-local function buildOn(player: Player, state: PlayerState, petId: string, slot: Slots.Slot, level: number): Rig.Rig?
+-- `slot` is nil for a Detached pet, which claims no attachment; `origin` then says where to
+-- put it and nothing moves it afterwards.
+local function buildOn(
+	player: Player,
+	state: PlayerState,
+	petId: string,
+	slot: Slots.Slot?,
+	level: number,
+	origin: CFrame?
+): Rig.Rig?
 	local entry = Catalog.get(petId)
 	if not entry then
 		warn(`[Companions] No pet model named "{petId}"; nothing spawned.`)
@@ -310,16 +489,16 @@ local function buildOn(player: Player, state: PlayerState, petId: string, slot: 
 
 	local uid = nextUid()
 	local settings = Config.resolve(petId, level)
-	local rig = Rig.build(entry, settings, slot, playerContainer(player), player, uid, _rng, level)
+	local rig = Rig.build(entry, settings, slot, playerContainer(player), player, uid, _rng, level, origin)
 	if not rig then
 		return nil
 	end
 
 	state.rigs[uid] = rig
 	publishLevel(rig)
-	if settings.bobAmplitude > 0 then
-		addBobbing(rig)
-	end
+	-- Bobbing, ground-walking, or neither: addDriven decides, so the caller does not have
+	-- to know which concerns need a heartbeat.
+	addDriven(rig)
 	Ticker.attach(player, rig)
 	return rig
 end
@@ -339,29 +518,56 @@ local function spawnPet(player: Player, state: PlayerState, slotId: string, entr
 		return false
 	end
 
-	-- A pinned attachment wins over wherever this slot happened to sit last.
-	local definition = Config.slot(slotId)
-	local preferred = (definition and definition.attachment) or state.attachments[slotId]
+	--[[
+		A DETACHED PET CLAIMS NO POSITION. It is not following anything, so taking one of the
+		character's attachments would deny it to a pet that is -- and there would be nothing
+		to attach it with anyway.
 
-	-- Claimed before the rig is built so a build failure can hand the position back.
-	local uid = nextUid()
-	local slot = Slots.claim(set, uid, preferred)
-	if not slot then
-		warn(`[Companions] {player.Name} has no free pet position left ({#set.slots} in the "{set.source}" schema).`)
-		return false
-	end
+		It is placed where the character stands and then left alone. Everything else about it
+		is ordinary: it fills a loadout slot, it ticks, and it despawns with the slot and with
+		the character. Only its MOVEMENT is the host's.
+	]]
+	local rig: Rig.Rig?
+	if Config.resolve(entry.petId, entry.level).followMode == "Detached" then
+		rig = buildOn(player, state, entry.petId, nil, entry.level, set.root.CFrame)
+		if rig then
+			state.bySlot[slotId] = rig.uid
+		end
+	else
+		-- A pinned attachment wins over wherever this slot happened to sit last.
+		local definition = Config.slot(slotId)
+		local preferred = (definition and definition.attachment) or state.attachments[slotId]
 
-	local rig = buildOn(player, state, entry.petId, slot, entry.level)
-	if not rig then
+		-- Claimed before the rig is built so a build failure can hand the position back.
+		local uid = nextUid()
+		local slot = Slots.claim(set, uid, preferred)
+		if not slot then
+			warn(
+				`[Companions] {player.Name} has no free pet position left`
+					.. ` ({#set.slots} in the "{set.source}" schema).`
+			)
+			return false
+		end
+
+		rig = buildOn(player, state, entry.petId, slot, entry.level)
+		if not rig then
+			Slots.release(set, uid)
+			return false
+		end
+
+		-- The position was claimed under a placeholder uid; move it onto the rig that took it.
 		Slots.release(set, uid)
-		return false
+		set.occupied[slot.key] = (rig :: Rig.Rig).uid
+		state.attachments[slotId] = slot.key
+		state.bySlot[slotId] = (rig :: Rig.Rig).uid
 	end
 
-	-- The position was claimed under a placeholder uid; move it onto the rig that took it.
-	Slots.release(set, uid)
-	set.occupied[slot.key] = rig.uid
-	state.attachments[slotId] = slot.key
-	state.bySlot[slotId] = rig.uid
+	if not rig then
+		return false
+	end
+	-- One exit, so the spawn signal cannot be announced on one path and forgotten on the
+	-- other -- which is exactly the bug a two-branch spawn invites.
+	announce(_spawnedListeners, player, slotId, rig)
 	return true
 end
 
@@ -382,9 +588,7 @@ local function applyLevel(player: Player, rig: Rig.Rig, level: number): boolean
 	Rig.applySettings(rig, Config.resolve(rig.petId, clamped))
 
 	-- The new level may have switched bobbing on, and the bob loop only drives pets it holds.
-	if rig.settings.bobAmplitude > 0 then
-		addBobbing(rig)
-	end
+	addDriven(rig)
 	-- Likewise for ticking: a pet that only starts acting at a higher level needs to be scheduled.
 	-- The interval itself is read from rig.settings each tick, so it needs nothing here.
 	Ticker.attach(player, rig)
@@ -634,9 +838,7 @@ function Companions.definePet(petId: string, entry: Config.PetEntry): boolean
 		for _, rig in state.rigs do
 			if rig.petId == petId then
 				Rig.applySettings(rig, Config.resolve(petId, rig.level))
-				if rig.settings.bobAmplitude > 0 then
-					addBobbing(rig)
-				end
+				addDriven(rig)
 			end
 		end
 	end
@@ -668,6 +870,30 @@ end
 
 -- Called on every level change, from any cause. Unlike setLevelHook there is no per-pet slot to
 -- compete for, so a host can mirror levels without blocking a pet's own hook.
+--[[
+	Every time a pet APPEARS, including a character respawn -- which is the case an
+	equip-only listener misses, because a respawn rebuilds bodies without the loadout
+	changing.
+
+	Where per-pet state belongs: health, a nameplate, a health bar, VFX. Key it on
+	`context.uid`, which changes with each new body, so state about the previous one stops
+	applying by construction.
+]]
+function Companions.onSpawned(listener: PetListener)
+	table.insert(_spawnedListeners, listener)
+end
+
+--[[
+	Every time a pet is about to DISAPPEAR -- unequipped, its copy consumed by a merge, its
+	owner's character dying, or the player leaving.
+
+	Fires before the model is destroyed so a listener can read where it ended up. A listener
+	that yields resumes to find it gone, so read what you need first.
+]]
+function Companions.onDespawned(listener: PetListener)
+	table.insert(_despawnedListeners, listener)
+end
+
 function Companions.onLevelChanged(listener: LevelListener)
 	table.insert(_levelListeners, listener)
 end
@@ -1017,6 +1243,78 @@ end
 function Companions.slotOf(player: Player, petId: string, level: number?): string?
 	local state = _state[player]
 	return if state then Loadout.slotOf(state.record, petId, level) else nil
+end
+
+-- ── Animation and physics ─────────────────────────────────────────────────────
+
+-- The live pet serving a loadout slot, or nil when that slot is empty or the pet has not
+-- spawned yet. What a host needs to move a Detached companion.
+function Companions.getPet(player: Player, slotId: string): Rig.Rig?
+	local state = _state[player]
+	if not state then
+		return nil
+	end
+	local uid = state.bySlot[slotId]
+	return if uid then state.rigs[uid] else nil
+end
+
+--[[
+	Plays a one-shot animation on the pet in a slot, over its idle loop, handing back to
+	the loop when it finishes.
+
+	BY SLOT AND NOT BY PET ID, because two copies of one companion may be out at once and
+	"make the Knight swing" would not say which. A host that wants both asks twice.
+
+	The loop is weighted out rather than stopped, so a pet that acts twice does not visibly
+	reset its idle in between. A second action replaces the first: layering two one-shots
+	produces a pose neither animation describes.
+]]
+function Companions.playAction(
+	player: Player,
+	slotId: string,
+	animationId: string,
+	speed: number?,
+	fadeTime: number?
+): boolean
+	local rig = Companions.getPet(player, slotId)
+	if not rig then
+		return false
+	end
+	return Rig.playAction(rig, animationId, speed, fadeTime)
+end
+
+-- Cuts an action short. The loop comes back the same way it would have anyway, through the
+-- track's Stopped -- one path back rather than two that could disagree.
+function Companions.stopAction(player: Player, slotId: string)
+	local rig = Companions.getPet(player, slotId)
+	if rig then
+		Rig.stopAction(rig)
+	end
+end
+
+function Companions.isPlayingAction(player: Player, slotId: string): boolean
+	local rig = Companions.getPet(player, slotId)
+	return rig ~= nil and Rig.isPlayingAction(rig)
+end
+
+--[[
+	Sets physics properties across every part of the pet in a slot.
+
+	FOR DETACHED PETS, mostly. A following pet is decoration and is built inert on purpose:
+	it must not block the host's raycasts or trip its collision handlers. A detached one may
+	be a mount, a turret or a vehicle, and none of those work inert -- so the host says what
+	it needs rather than this package guessing.
+
+	Only the fields given are applied, so turning collision on does not silently also make
+	the pet queryable.
+]]
+function Companions.setPhysics(player: Player, slotId: string, spec: Rig.PhysicsSpec): boolean
+	local rig = Companions.getPet(player, slotId)
+	if not rig then
+		return false
+	end
+	Rig.setPhysics(rig, spec)
+	return true
 end
 
 -- For hosts that add or move slot markers after the character spawned.

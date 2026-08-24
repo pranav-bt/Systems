@@ -19,7 +19,7 @@ export type TickContext = {
 	uid: string, -- unique per live pet, so a handler can key its own state per instance
 	model: Model,
 	root: BasePart,
-	slotKey: string,
+	slotKey: string?, -- nil for a Detached pet
 	level: number,
 	interval: number, -- the interval actually used, after any per-level override
 	dt: number, -- seconds since this pet's previous tick; at least interval, more after a stall

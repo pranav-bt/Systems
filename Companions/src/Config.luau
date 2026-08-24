@@ -26,16 +26,19 @@
 --   slots             the loadout's slots, declared by id. See the Slots section.
 --
 -- Per-pet settings — Config.defaults, overridable per pet id through Config.pets
---   followMode        "Constraint" floats the pet with AlignPosition/AlignOrientation, "Weld" locks it rigidly
+--   followMode        how the pet moves with its owner. See the FollowMode note below.
 --   anchorOffset      local point of the pet's root part that gets pinned to the slot; +Y lowers the pet
 --   scale             Model:ScaleTo value; nil keeps the model's authored size
 --   responsiveness / maxForce                     AlignPosition tuning (Constraint mode only)
 --   orientationResponsiveness / maxTorque         AlignOrientation tuning (Constraint mode only)
 --   bobAmplitude / bobFrequency  vertical idle bob, in studs and cycles per second.
 --                                bobAmplitude = 0 means the pet is skipped by the per-frame loop entirely.
---   loopAnimation     true plays a looping animation on the pet; false leaves the model static
+--   loopAnimation     nil (the default) plays a loop IF there is one to play, so supplying an
+--                     animationId is enough on its own. false leaves the model static even when
+--                     an animation is authored; true warns when there is none to find.
 --   animationId       rbxassetid to load; nil means "use an Animation instance inside the model"
 --   animationName     name of that Animation instance; nil means "first Animation found in the model"
+--   actionFadeTime    crossfade, in seconds, between the idle loop and a one-shot action
 --   animationSpeed    AnimationTrack:AdjustSpeed value
 --   networkOwner      "Player" lets the owner's client simulate the pet (smoothest for them, since the
 --                     character it follows is client-simulated too), "Server" keeps simulation on the
@@ -56,7 +59,23 @@
 -- from the host. followMode and networkOwner decide how the pet is attached in the first place and
 -- so only take effect the next time it spawns.
 
-export type FollowMode = "Constraint" | "Weld"
+--[[
+	How a pet moves with its owner.
+
+	  Float     AlignPosition + AlignOrientation onto the character's slot attachment. The
+	            pet hangs in the air beside its owner and does not collide with anything.
+	  Ground    the same constraints, but aimed at the point on the ground BELOW the slot
+	            rather than at the slot itself, so the pet walks along the floor. Found by
+	            a downward ray on a throttled cadence -- not by making the pet collide and
+	            letting gravity hold it down, which would need a collision group this
+	            package cannot create and would let pets shove each other and the player.
+	  Weld      rigidly locked to the slot. No drift, no lag, no life.
+	  Detached  no attachment claimed and no constraints at all. This package spawns it,
+	            despawns it with the slot and the character, and otherwise leaves it alone:
+	            moving it is the host's, which is what makes a stationary turret, a mount or
+	            a vehicle expressible. Use setPhysics to make it collidable or queryable.
+]]
+export type FollowMode = "Float" | "Ground" | "Weld" | "Detached"
 export type NetworkOwner = "Player" | "Server" | "Auto"
 
 -- Fully resolved settings for one pet at one level. Config.defaults is the only complete
@@ -71,9 +90,12 @@ export type PetSettings = {
 	maxTorque: number,
 	bobAmplitude: number,
 	bobFrequency: number,
-	loopAnimation: boolean,
+	loopAnimation: boolean?,
 	animationId: string?,
 	animationName: string?,
+	-- Crossfade when an action takes over from the idle loop and when it hands back. Short
+	-- enough to read as a reaction, long enough not to snap.
+	actionFadeTime: number,
 	animationSpeed: number,
 	networkOwner: NetworkOwner,
 	tickInterval: number?,
@@ -92,6 +114,7 @@ export type PetOverrides = {
 	loopAnimation: boolean?,
 	animationId: string?,
 	animationName: string?,
+	actionFadeTime: number?,
 	animationSpeed: number?,
 	networkOwner: NetworkOwner?,
 	tickInterval: number?,
@@ -138,6 +161,25 @@ Config.generatedSlotRadius = 4
 Config.generatedSlotHeight = 4
 Config.generatedHeightJitter = 0.75
 Config.generatedAngleJitter = 0.35 -- radians, applied either side of the even ring spacing
+
+-- ── Ground mode ───────────────────────────────────────────────────────────────
+
+--[[
+	Where "the ground" is, for a Ground-mode pet.
+
+	  groundOffset    how far above the surface the pet's anchor sits, in studs. Raise it for
+	                  a rig whose authored origin is at its feet rather than its middle.
+	  groundDistance  how far down to look from the slot before giving up. A pet over a
+	                  chasm keeps its last known height rather than diving after the floor.
+	  groundInterval  seconds between ground re-checks. NOT every frame: the floor under a
+	                  running player changes slowly compared to 60Hz, and one ray per pet per
+	                  frame is a cost with nothing to show for it. The pet still moves
+	                  smoothly between checks, because the constraint interpolates -- only
+	                  the TARGET is stepped.
+]]
+Config.groundOffset = 1.5
+Config.groundDistance = 64
+Config.groundInterval = 0.1
 
 -- ── Slots ─────────────────────────────────────────────────────────────────────
 
@@ -206,7 +248,7 @@ Config.baseLevel = 1
 -- ── Per-pet settings ──────────────────────────────────────────────────────────
 
 Config.defaults = {
-	followMode = "Constraint",
+	followMode = "Float",
 	anchorOffset = Vector3.zero,
 	scale = nil,
 	responsiveness = 25,
@@ -215,9 +257,10 @@ Config.defaults = {
 	maxTorque = 100000,
 	bobAmplitude = 0,
 	bobFrequency = 1,
-	loopAnimation = false,
+	loopAnimation = nil,
 	animationId = nil,
 	animationName = nil,
+	actionFadeTime = 0.1,
 	animationSpeed = 1,
 	networkOwner = "Player",
 	tickInterval = nil,
