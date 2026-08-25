@@ -6,7 +6,7 @@ nothing outside its own folder except declared Wally packages.
 Two lineages live here:
 
 - **Extracted from CastleWars** (Zone, Nametags, Moveables, Heatmap, TimeSync, LagCompensation,
-  Placement, Matchmaking, SharedUtils) — game-specific coupling replaced with injected config /
+  Placement, Matchmaking) — game-specific coupling replaced with injected config /
   callbacks or self-provisioning; extracted read-only, source game unmodified. The extraction
   conventions below apply to these.
 - **The AI suite, built new** (Bots, Pathfinding, Perception, TacticalQuery, HTN) — five
@@ -48,7 +48,7 @@ Two lineages live here:
 | **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. |
 | **Placement** | server + client + shared | `nezuo/spark` | Free-form structure placement: grid-snapped preview ghost + server validation. |
 | **Matchmaking** | server | `evaera/promise` | Cross-server, region-shardable MemoryStore matchmaking with leader election + teleport hand-off. |
-| **SharedUtils** | shared | `evaera/promise` (Scheduler only) | Grab-bag of generic utils: ObjectPool, InstanceObjectPool, Spring, BezierTween, Color, noYield, Collision, Scheduler, Cleanup. |
+| **ObjectPool** | any | none | Instance reuse. One pool per template (an object, not a singleton keyed by string), with the release strategy injected -- unparent, park out of sight for particles whose warm-up must survive, or disable in place. Explicit cap policy (grow / steal-oldest / nil), warm-up, and a `release` that no-ops on a foreign or double release rather than crashing. |
 | **Bots** | server | none | Generic, body-agnostic agent brain: blackboard sensing + decaying working-memory facts, utility goal selection with commitment, sequenced actions with guaranteed exits, squad token pools, per-bot tick pacing under a budgeted per-frame scheduler, out-of-band `stimulate`. |
 | **Pathfinding** | server | none | Movement behind two tiny contracts: `Mover` ("go to this position" -- `PathAgent` is the PathfindingService implementation) and `RouteFollower` ("walk this list" -- authored waypoints with raw MoveTo, no navmesh), authored via `Routes`. A shared `Paths` broker bounds concurrent navmesh computations, ages the queue so none starve, and cancels work a moved goal invalidated. Pairs with Bots; depends on nothing. |
 | **Perception** | server | none | AI sensing: vision with awareness-over-time (FOV + LOS + None/Suspicious/Detected ladder), occlusion-aware hearing stimulus bus, token-bucket raycast budgeting that freezes unsampled targets instead of guessing at them. |
@@ -90,9 +90,15 @@ copies that multi-file packages still need.
 - **Matchmaking** — inject `resolveTargetPlaceId()` and `keyPrefix`; wire your own remotes to
   `joinQueue` / `exitQueue` and push status via the `onStatus` callback (or pull `getStatus`).
   Region sharding ships disabled (single shard) exactly as in the original.
-- **SharedUtils** — `Scheduler` is the only module needing a Wally package (Promise). `Base64`,
-  `TypeForge`, and Quenty's `Spring` in the source game are third-party libraries available upstream
-  on their own; only `Spring` was included here (it's small and self-contained).
+- **ObjectPool** — replaced `SharedUtils` (removed Aug 2026), which was a namespace rather than a
+  library: nine unrelated modules of very different quality, none of them consumed anywhere in this
+  repo, none of them ever tested. Testing it turned up 11 bugs, a module that could not be required
+  at all without a Wally `Promise` that was never vendored, and a pool that created a Folder in
+  `workspace` **at require time**. Its two pools were unified here; `Collision`'s geometry moved
+  into `Zone.query`, where the same maths already lived and was already tested. The rest was
+  deleted: `Cleanup` was a worse Maid than Trove/Janitor already on Wally, `Scheduler` was a thin
+  `Connect` wrapper with none of the budgeting that makes a scheduler worth having (Bots and Zone
+  both contain better ones), and `Spring` is Quenty's, available upstream.
 - **Bots** — rebuilt (Aug 2026) from the original filler-bot fleet into a generic agent brain with
   **zero** assumptions about what a bot physically is: the consumer supplies a free-form `body`,
   sensors, goals, and actions; the library supplies selection, commitment, execution, and error

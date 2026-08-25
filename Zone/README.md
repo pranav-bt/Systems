@@ -30,6 +30,38 @@ callback.
 - Server-only (the built-in `player` type relies on `Players` and character
   `HumanoidRootPart`s).
 
+## `Zone.query` — the same geometry, without a Zone
+
+A Zone is a **watcher**: it owns a part, keeps a subject set, sweeps on a shared Heartbeat and
+fires enter/exit. Plenty of code wants none of that and has a one-off question. Building a Zone
+to ask it costs a sweep registration, a cached CFrame and a set, all to be thrown away.
+
+```lua
+Zone.query.pointInPart(position, part)                    -- dispatches on part.Shape
+Zone.query.pointInBox(point, cframe, size)                -- size is FULL size, not half
+Zone.query.pointInCylinder(point, cframe, size)           -- height runs along X
+Zone.query.pointInBall(point, cframe, size)               -- ellipsoid, not one radius
+Zone.query.boxTouchesSphere(center, size, sphere, radius) -- exact
+Zone.query.boxTouchesOrientedBox(center, size, cframe, size)
+```
+
+These call the **same** exact tests the sweep does, so a caller asking directly gets the answer
+a Zone would give, forever. Two copies of containment maths that agree only until someone edits
+one is the failure this avoids — and it wasn't hypothetical: a separate utils package carried
+its own point-in-box using `CFrame:Inverse()`, a slower spelling of the same thing, and had
+drifted into being a second opinion.
+
+`pointInPart` is worth preferring over picking a function yourself: the one people get wrong is
+the cylinder, because Roblox runs a cylinder's height along **X**, and a caller reading `.Size`
+and assuming a box gets it wrong in a way that looks almost right.
+
+> **`boxTouchesOrientedBox` is CONSERVATIVE.** It tests the oriented box's three axes only. A
+> separating axis found there is real, so a `false` is always right — **no false negatives** —
+> but a full separating-axis test needs fifteen axes, so two boxes that miss on one of the
+> twelve not checked still come back `true`. That's the correct trade for a broad phase: cheap,
+> never misses a real overlap, and whatever it lets through gets an exact test afterwards. It
+> is the wrong function for "did the shot land".
+
 ## Files
 
 | File | Purpose |

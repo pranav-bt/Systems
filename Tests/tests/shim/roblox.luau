@@ -50,10 +50,25 @@ function Vector3.__sub(a, b)
 	return v3(a.X - b.X, a.Y - b.Y, a.Z - b.Z)
 end
 function Vector3.__mul(a, b)
+	-- `0 * vector` reaches here with a NUMBER on the left: Luau finds no metatable on the
+	-- number and falls through to the right operand's. Spring does exactly this to build a
+	-- zero velocity of the same type as its target.
+	if type(a) == "number" then
+		return v3(a * b.X, a * b.Y, a * b.Z)
+	end
 	if type(b) == "number" then
 		return v3(a.X * b, a.Y * b, a.Z * b)
 	end
 	return v3(a.X * b.X, a.Y * b.Y, a.Z * b.Z)
+end
+function Vector3.__div(a, b)
+	if type(a) == "number" then
+		return v3(a / b.X, a / b.Y, a / b.Z)
+	end
+	if type(b) == "number" then
+		return v3(a.X / b, a.Y / b, a.Z / b)
+	end
+	return v3(a.X / b.X, a.Y / b.Y, a.Z / b.Z)
 end
 function Vector3.__unm(a)
 	return v3(-a.X, -a.Y, -a.Z)
@@ -124,6 +139,17 @@ function CFrame.__mul(a, b)
 	end
 	return a.Position + rotate(a, b)
 end
+function CFrame.__index(self, key)
+	if key == "RightVector" then
+		return rawget(self, "_right")
+	elseif key == "UpVector" then
+		return rawget(self, "_up")
+	elseif key == "LookVector" then
+		-- The engine's LookVector points along -Z of the frame; `_back` is +Z here.
+		return -rawget(self, "_back")
+	end
+	return CFrame[key]
+end
 function CFrame.Inverse(self)
 	local inverted = cf(v3(0, 0, 0), -self._yaw)
 	return cf(rotate(inverted, self.Position * -1), -self._yaw)
@@ -145,6 +171,46 @@ rbx.CFrame = {
 	end,
 	yaw = function(position, radians)
 		return cf(position, radians)
+	end,
+	--[[
+		Orientation from a DIRECTION rather than a target. The shim's CFrame carries a yaw
+		only, so the direction is flattened onto the XZ plane -- enough to tell "it faced along
+		the curve" from "it did not", which is what the callers here assert.
+
+		A ZERO direction is an error, as it is in the engine: there is no facing to derive from
+		it, and silently returning identity would hide exactly the degenerate-curve case a test
+		is trying to catch.
+	]]
+	lookAlong = function(position, direction)
+		assert(direction ~= nil, "CFrame.lookAlong: a direction is required")
+		local flat = direction.X * direction.X + direction.Z * direction.Z
+		assert(
+			flat == flat and (flat > 0 or direction.Y ~= 0),
+			"CFrame.lookAlong: direction must not be a zero vector"
+		)
+		return cf(position, math.atan2(direction.X, direction.Z))
+	end,
+}
+
+-- ------------------------------------------------------------------ Color3 --
+
+-- Stored as floats, as the engine does, with a fromRGB that divides by 255. Enough for a
+-- caller to assert what a colour helper produced.
+local function color3(r, g, b)
+	return setmetatable({ R = r, G = g, B = b }, {
+		__eq = function(a, other)
+			return a.R == other.R and a.G == other.G and a.B == other.B
+		end,
+		__tostring = function(self)
+			return `Color3({self.R}, {self.G}, {self.B})`
+		end,
+	})
+end
+
+rbx.Color3 = {
+	new = color3,
+	fromRGB = function(r, g, b)
+		return color3((r or 0) / 255, (g or 0) / 255, (b or 0) / 255)
 	end,
 }
 
@@ -374,7 +440,7 @@ local function newPart()
 		self.Parent = nil
 	end
 	function part.IsA(_, class)
-		return class == "Part" or class == "BasePart"
+		return class == "Part" or class == "BasePart" or class == "PVInstance" or class == "Instance"
 	end
 	function part.SetAttribute(self, name, value)
 		local bag = rawget(self, "_attributes")
@@ -389,6 +455,15 @@ local function newPart()
 		return if bag then bag[name] else nil
 	end
 	function part.SetNetworkOwner() end
+	-- The PVInstance surface. A part's pose IS its CFrame, so these are that same storage
+	-- under the names code reaches for when it does not care whether it holds a part or a
+	-- model.
+	function part.GetPivot(self)
+		return rawget(self, "_cframe")
+	end
+	function part.PivotTo(self, target)
+		rawset(self, "_cframe", target)
+	end
 	function part.Clone(self)
 		local copy = newPart()
 		for _, key in
@@ -960,6 +1035,18 @@ end
 function rbx.setPathResult(status, waypoints)
 	pathStatus = status
 	pathWaypoints = waypoints or {}
+end
+
+-- Roblox's `time()`: seconds since the game started. Advanced by a test rather than real,
+-- so anything driven by it can be stepped exactly.
+local gameTime = 0
+
+function rbx.time()
+	return gameTime
+end
+
+function rbx.setTime(value)
+	gameTime = value
 end
 
 local heartbeat, fireHeartbeat, heartbeatHandlers = makeSignal()

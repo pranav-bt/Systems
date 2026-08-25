@@ -314,6 +314,122 @@ type TypeEntry = {
 	warned: boolean,
 }
 
+-- ------------------------------------------------------ stateless queries --
+
+--[[
+	The same geometry, without a Zone.
+
+	A Zone is a WATCHER: it owns a part, keeps a subject set, sweeps on a shared
+	Heartbeat and fires enter/exit. Plenty of code wants none of that and only has a
+	one-off question -- "is this point inside that part", "does this bounding box
+	touch that trigger" -- and building a Zone to ask it costs a sweep registration,
+	a cached CFrame and a set, all to be thrown away.
+
+	These are pure functions over the exact tests the sweep itself uses, so a caller
+	asking directly gets the same answer a Zone would give, forever. Two copies of
+	containment maths that agree only until someone edits one is the failure this
+	avoids -- and it is not hypothetical: the geometry that used to live in a
+	separate utils package tested a point against a box with `CFrame:Inverse()`,
+	which is a slower spelling of the same thing, and had drifted into being a
+	second opinion.
+
+	`size` is the full size, as authored on a Part -- not half-extents.
+]]
+Zone.query = {}
+
+--[[
+	Point containment, one per shape.
+
+	`PointToObjectSpace` rather than `Inverse() * point`: one call, no intermediate
+	CFrame allocated. On a hot path that difference is the whole cost of the test.
+]]
+function Zone.query.pointInBox(point: Vector3, cframe: CFrame, size: Vector3): boolean
+	return insideBox(cframe:PointToObjectSpace(point), size * 0.5)
+end
+
+function Zone.query.pointInCylinder(point: Vector3, cframe: CFrame, size: Vector3): boolean
+	return insideCylinder(cframe:PointToObjectSpace(point), size * 0.5)
+end
+
+function Zone.query.pointInBall(point: Vector3, cframe: CFrame, size: Vector3): boolean
+	return insideBall(cframe:PointToObjectSpace(point), size * 0.5)
+end
+
+--[[
+	Point containment against whatever shape a Part actually is.
+
+	The dispatch a Zone does internally, exposed: a caller holding a part should not
+	have to read `.Shape` and pick the right function, because the one that gets
+	picked wrong is the cylinder -- Roblox runs its height along X, and a caller
+	guessing treats it as a box.
+
+	Anything that is not a Block, Cylinder or Ball falls back to the box test, which
+	is what a Zone built on such a part does.
+]]
+function Zone.query.pointInPart(point: Vector3, part: BasePart): boolean
+	local test = TESTS[part.Shape] or insideBox
+	return test(part.CFrame:PointToObjectSpace(point), part.Size * 0.5)
+end
+
+--[[
+	Does an axis-aligned box overlap a sphere? EXACT.
+
+	The closest point on the box to the sphere's centre is the box's centre clamped
+	into its own extents; the sphere reaches it or it does not. Compared SQUARED, so
+	no square root is taken -- the version of this that computes `.Magnitude ^ 2`
+	takes a root and then immediately undoes it.
+]]
+function Zone.query.boxTouchesSphere(
+	boxCenter: Vector3,
+	boxSize: Vector3,
+	sphereCenter: Vector3,
+	radius: number
+): boolean
+	local half = boxSize * 0.5
+	local dx = sphereCenter.X - math.clamp(sphereCenter.X, boxCenter.X - half.X, boxCenter.X + half.X)
+	local dy = sphereCenter.Y - math.clamp(sphereCenter.Y, boxCenter.Y - half.Y, boxCenter.Y + half.Y)
+	local dz = sphereCenter.Z - math.clamp(sphereCenter.Z, boxCenter.Z - half.Z, boxCenter.Z + half.Z)
+	return dx * dx + dy * dy + dz * dz <= radius * radius
+end
+
+--[[
+	Does an axis-aligned box overlap an ORIENTED one? CONSERVATIVE -- read this
+	before using it for anything that must be exact.
+
+	It tests the three axes of the oriented box only. A separating axis found there
+	is a real separation, so a `false` is always right: NO FALSE NEGATIVES. But a
+	full separating-axis test for a box pair needs fifteen axes -- three per box plus
+	nine cross products -- so two boxes that miss each other on one of the twelve not
+	checked here still come back `true`.
+
+	That is the correct trade for a BROAD PHASE, which is what this is for: cheap,
+	never misses a real overlap, and whatever it lets through gets an exact test
+	afterwards. It is the wrong function for "did the shot land", and a caller
+	wanting exactness should test the corners or use the engine's own overlap query.
+
+	The projection is the AABB's half-extents onto each of the oriented box's axes,
+	which for an axis-aligned box is just the absolute components of that axis.
+]]
+function Zone.query.boxTouchesOrientedBox(
+	boxCenter: Vector3,
+	boxSize: Vector3,
+	orientedCFrame: CFrame,
+	orientedSize: Vector3
+): boolean
+	local half = orientedSize * 0.5
+	local aabbHalf = boxSize * 0.5
+	local local_ = orientedCFrame:PointToObjectSpace(boxCenter)
+
+	local right, up, look = orientedCFrame.RightVector, orientedCFrame.UpVector, orientedCFrame.LookVector
+	local extentX = math.abs(right.X) * aabbHalf.X + math.abs(right.Y) * aabbHalf.Y + math.abs(right.Z) * aabbHalf.Z
+	local extentY = math.abs(up.X) * aabbHalf.X + math.abs(up.Y) * aabbHalf.Y + math.abs(up.Z) * aabbHalf.Z
+	local extentZ = math.abs(look.X) * aabbHalf.X + math.abs(look.Y) * aabbHalf.Y + math.abs(look.Z) * aabbHalf.Z
+
+	return math.abs(local_.X) <= half.X + extentX
+		and math.abs(local_.Y) <= half.Y + extentY
+		and math.abs(local_.Z) <= half.Z + extentZ
+end
+
 local registry: { [string]: TypeEntry } = {}
 
 -- Position resolvers ship for the shapes a game actually has. There is
