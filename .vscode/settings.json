@@ -1,34 +1,50 @@
 {
     // Workspace-scoped only: nothing here changes your other projects.
     //
-    // WHY THIS FILE EXISTS. This repo has an HTTPS github.com remote whose
-    // credential was never stored, so anything that contacts the remote raises a
-    // Git Credential Manager dialog. These switches stop the editor from
-    // contacting it on its own. They are a mitigation, not the cure -- the cure is
-    // either storing the credential once or dropping the remote until you push.
+    // WHY THIS FILE EXISTS. Nothing in this repo should contact github.com unless
+    // YOU ask it to. Pushing is a manual act, done when you decide; the editor
+    // never syncs, fetches or publishes on its own.
+    //
+    // This started as a workaround for constant Git Credential Manager dialogs.
+    // That cause is now fixed properly -- `credential.credentialStore` was never
+    // set, so GCM had nowhere to persist an approval and re-prompted forever --
+    // and these settings stay because "no background network" is what you want,
+    // not because anything is broken.
 
-    // The built-in periodic fetch. Off by default, set explicitly to rule it out.
+    // ── Never contact the remote on its own ──────────────────────────────────
     "git.autofetch": false,
     "git.autofetchPeriod": 0,
-
-    // Do not offer to publish/fetch this repo unprompted.
-    "git.autoRepositoryDetection": "openEditors",
     "git.fetchOnPull": false,
     "git.pullBeforeCheckout": false,
+    // Do not offer to publish a branch, which is a network call dressed as a hint.
+    "git.showPushSuccessNotification": false,
+    "git.postCommitCommand": "none",
+    // No "sync" affordance at all: pushing is explicit, and pull is a separate act.
+    "git.enableStatusBarSync": false,
 
-    // GitLens' remote-provider integration is what authenticates to GitHub for
-    // rich hovers, autolinks and PR info. Off here means GitLens still works
-    // locally (blame, history, graph) without ever touching the network.
+    // ── But DO show the repo, so a manual push is one click ──────────────────
+    // Detection is local -- it reads .git, it does not talk to the remote. This was
+    // "openEditors", which is why Source Control looked empty whenever no file from
+    // the repo happened to be open.
+    "git.autoRepositoryDetection": true,
+
+    // ── GitLens: local history only, no GitHub API ───────────────────────────
+    // Blame, history and the graph all keep working. What is off is the remote
+    // provider integration -- rich hovers, autolinks, PR info -- which authenticates
+    // to GitHub to do its job.
     "gitlens.integrations.enabled": false,
     "gitlens.autolinks": [],
-
-    // The Contributors view with showAllBranches wants remote branch refs; the
-    // global setting turns it on, so narrow it back for this repo.
+    // The Contributors view wants remote branch refs; the global setting turns it on,
+    // so narrow it back here.
     "gitlens.views.contributors.showAllBranches": false,
 
-    // Stop VS Code's GitHub auth provider volunteering for plain git operations.
+    // ── Let GCM own authentication, not the editor ───────────────────────────
+    // With credentialStore set, GCM prompts ONCE and remembers. VS Code's own GitHub
+    // auth provider volunteering for git operations is what made that unpredictable,
+    // and it would authenticate as whichever account it had a session for -- the
+    // wrong one, on a machine with two.
     "github.gitAuthentication": false,
 
-    // GitHub Actions: this repo has no workflows, so nothing here needs the API.
+    // No workflows in this repo, so nothing here needs the Actions API.
     "github-actions.workflows.pinned.refresh.enabled": false
 }
