@@ -10,16 +10,23 @@ lune run Tests/tests/test-zone.luau           # geometry, ticker, lifecycle     
 lune run Tests/tests/test-zone-types.luau     # subject-type registry           91
 lune run Tests/tests/test-zone-signals.luau   # event identity and isolation    30
 lune run Tests/tests/test-community-reward.luau  # claim flow, once and only once  51
+lune run Tests/tests/test-community-reward-client.luau # its client transport      18
 lune run Tests/tests/test-companions-loadout.luau # the record layer, pure        103
 lune run Tests/tests/test-companions.luau        # public API, persistence, hooks  75
 lune run Tests/tests/test-companions-addons.luau # merge and pay-to-level          66
 lune run Tests/tests/test-companions-rig.luau    # follow modes and animation      54
+lune run Tests/tests/test-companions-ticker.luau # per-pet tick scheduling         26
+lune run Tests/tests/test-trading.luau           # trade sessions, offers, swaps   72
+lune run Tests/tests/test-trading-lines.luau     # the default line shape          23
+lune run Tests/tests/test-trading-client.luau    # its client transport            22
 lune run Tests/tests/test-mech.luau           # AI suite: Mech archetype        18
 lune run Tests/tests/test-castle.luau         # AI suite: Castle archetype      19
 lune run Tests/tests/test-bnb.luau            # AI suite: BnB archetype         21
 ```
 
-617 checks at present, all passing. Each file prints `N passed, M failed` and exits non-zero
+778 checks at present, all passing. **Every realm of every library is covered** --
+server, client and shared -- because "tested" meaning only the server half is how a client
+typo survives a green run. Each file prints `N passed, M failed` and exits non-zero
 on failure.
 
 ## Layout

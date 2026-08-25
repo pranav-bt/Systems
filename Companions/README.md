@@ -35,9 +35,10 @@ Server-owned pet/companion system: models are cloned out of `ReplicatedStorage`,
 
 Movement modes, the idle loop and one-shot actions are covered below.
 
-Tests: `test-companions-loadout.luau` (103 checks, the pure record layer),
-`test-companions.luau` (75, the public API, persistence and the per-pet hooks) and `test-companions-rig.luau`
-(54, follow modes and animation) — all headless, no Studio.
+Tests, all headless: `test-companions-loadout.luau` (103 — the pure record layer),
+`test-companions.luau` (75 — the public API, persistence and the per-pet hooks),
+`test-companions-rig.luau` (54 — follow modes and animation) and
+`test-companions-ticker.luau` (26 — per-pet tick scheduling).
 
 ## Quick start
 

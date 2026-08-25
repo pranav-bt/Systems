@@ -26,8 +26,8 @@ membership, checks a one-time flag on the player's profile, and calls the reward
 | `src/server/init.luau` | Claim flow, prompt binding, transport. |
 | `src/client/init.luau` | Transport only — no window, no copy. |
 
-Tests: `Tests/tests/test-community-reward.luau` — 51 checks over the claim flow, run headless
-with no Studio.
+Tests: `test-community-reward.luau` (51 — the claim flow) and
+`test-community-reward-client.luau` (18 — its transport). Headless, no Studio.
 
 ## Server API
 

@@ -20,6 +20,20 @@ local rbx = {}
 -- until the first yield, and accepts a thread to resume as well as a function.
 rbx.task = task
 
+--[[
+	Roblox's `debug` with the profiler entry points Lune does not have.
+
+	`profilebegin` / `profileend` are Roblox-only and cost nothing here, but library code
+	calls them around every per-frame loop -- so without these, the first suite to actually
+	drive a heartbeat dies on a nil call rather than on anything it was testing.
+
+	Falls through to the real `debug` for `traceback`, which the xpcall handlers rely on.
+]]
+rbx.debug = setmetatable({
+	profilebegin = function() end,
+	profileend = function() end,
+}, { __index = debug })
+
 -- ------------------------------------------------------------------ Vector3 --
 
 local Vector3 = {}
@@ -185,20 +199,37 @@ rbx.Random = {
 
 -- ---------------------------------------------------------------- signals --
 
+--[[
+	A signal.
+
+	HANDLERS ARE AN ARRAY, NOT A SET KEYED BY FUNCTION, and that is a fidelity fix rather
+	than a style choice. Luau caches closures whose upvalues are identical, so calling a
+	`start()` twice can hand `Connect` the SAME function object both times -- and a set
+	keyed by function silently dedupes it. Roblox does not: two Connects are two
+	connections and fire twice.
+
+	Keyed by function, this shim made a double-start look harmless when in the engine it
+	would double every remote handler in the module.
+]]
 local function makeSignal()
 	local handlers = {}
 	local signal = {}
 	function signal.Connect(_, fn)
-		handlers[fn] = true
+		local entry = { fn = fn }
+		table.insert(handlers, entry)
 		return {
 			Disconnect = function()
-				handlers[fn] = nil
+				local index = table.find(handlers, entry)
+				if index then
+					table.remove(handlers, index)
+				end
 			end,
 		}
 	end
 	local function fire(...)
-		for fn in handlers do
-			fn(...)
+		-- Snapshot, because a handler may disconnect itself or another mid-fire.
+		for _, entry in table.clone(handlers) do
+			entry.fn(...)
 		end
 	end
 	return signal, fire, handlers
@@ -606,17 +637,55 @@ rbx.Instance = {
 			function remote.IsA(_, queried)
 				return queried == "RemoteEvent" or queried == "Instance"
 			end
-			-- FireClient drops the player argument the real API takes first: a headless
-			-- test has one client, and keeping the signature would only invite asserting
-			-- on a value the shim invented.
-			function remote.FireClient(_, _player, ...)
+			--[[
+				FireClient LOGS who it was sent to, then fires OnClientEvent WITHOUT the
+				player -- which is the real signature on the receiving end.
+
+				The log is the point: a two-player flow like a trade is untestable if both
+				sides share one undifferentiated signal, and "what did Ana see" needs the
+				recipient kept.
+			]]
+			remote._sent = {}
+			function remote.FireClient(_, player, ...)
+				table.insert(remote._sent, { player = player, args = { ... } })
 				fireToClient(...)
+			end
+			-- Everything sent to one player, oldest first.
+			function remote.sentTo(_, player)
+				local out = {}
+				for _, entry in remote._sent do
+					if entry.player == player then
+						table.insert(out, entry.args)
+					end
+				end
+				return out
+			end
+			function remote.clearSent()
+				table.clear(remote._sent)
 			end
 			function remote.FireAllClients(_, ...)
 				fireToClient(...)
 			end
+			--[[
+				FireServer LOGS what the client sent, then fires OnServerEvent.
+
+				The engine prepends the sending Player on the way in; this does not, because
+				a headless shim has no LocalPlayer to prepend. Server-side tests therefore
+				pass a player explicitly as the first argument, and CLIENT-side tests read
+				`firedToServer()` instead of listening -- which keeps the two readings from
+				quietly disagreeing about whether a player is in there.
+			]]
+			remote._fired = {}
 			function remote.FireServer(_, ...)
+				table.insert(remote._fired, { ... })
 				fireToServer(...)
+			end
+			-- Everything the client sent, oldest first.
+			function remote.firedToServer()
+				return remote._fired
+			end
+			function remote.clearFired()
+				table.clear(remote._fired)
 			end
 			return remote
 		elseif class == "ProximityPrompt" then
@@ -655,6 +724,10 @@ rbx.workspace.Name = "Workspace"
 -- --------------------------------------------------------------- services --
 
 local playerList = {}
+local nextUserId = 0
+-- Stands in for the Players service as a parent, so `player.Parent` is truthy while a
+-- player is here and nil once they are not.
+local playerService = { Name = "Players" }
 local playerAdded, firePlayerAdded = makeSignal()
 local playerRemoving, firePlayerRemoving = makeSignal()
 
@@ -725,6 +798,14 @@ rbx.game = {
 					end
 					return out
 				end,
+				GetPlayerByUserId = function(_, userId)
+					for _, player in playerList do
+						if player.UserId == userId then
+							return player
+						end
+					end
+					return nil
+				end,
 				PlayerAdded = playerAdded,
 				PlayerRemoving = playerRemoving,
 			}
@@ -793,8 +874,16 @@ function rbx.addPlayer(name, position)
 	rbx.workspace:Add(character)
 	local characterAdded, fireCharacterAdded = makeSignal()
 	local characterRemoving, fireCharacterRemoving = makeSignal()
+	nextUserId += 1
+	local attributes = {}
+	local attributeSignals = {}
 	local player = {
 		Name = name,
+		DisplayName = name,
+		UserId = nextUserId,
+		-- Truthy while they are in the server: library code checks `player.Parent` before
+		-- talking to somebody who may already have left.
+		Parent = playerService,
 		Character = character,
 		_hrp = hrp,
 		CharacterAdded = characterAdded,
@@ -803,6 +892,25 @@ function rbx.addPlayer(name, position)
 		_fireCharacterAdded = fireCharacterAdded,
 		_fireCharacterRemoving = fireCharacterRemoving,
 	}
+	function player.GetAttribute(_, key)
+		return attributes[key]
+	end
+	function player.SetAttribute(_, key, value)
+		attributes[key] = value
+		local entry = attributeSignals[key]
+		if entry then
+			entry.fire()
+		end
+	end
+	function player.GetAttributeChangedSignal(_, key)
+		local entry = attributeSignals[key]
+		if not entry then
+			local signal, fire = makeSignal()
+			entry = { signal = signal, fire = fire }
+			attributeSignals[key] = entry
+		end
+		return entry.signal
+	end
 	table.insert(playerList, player)
 	firePlayerAdded(player)
 	return player
@@ -840,6 +948,9 @@ function rbx.removePlayer(player)
 	if index then
 		table.remove(playerList, index)
 	end
+	-- Cleared BEFORE the signal, so a handler asking "are they still here" gets the right
+	-- answer -- which is exactly what library code checks before sending them anything.
+	player.Parent = nil
 	firePlayerRemoving(player)
 end
 

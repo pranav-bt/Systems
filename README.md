@@ -36,6 +36,7 @@ Two lineages live here:
 | **Companions** | server | none | Pet/companion system: declared content, per-pet tick hooks, a collection where ownership is a count per LEVEL, and a loadout of identified slots. Server-owned rigs replicated to everyone. No combat, no UI, no in-run levelling -- raising a level is what the Merge and Upgrades addons are for. |
 | **CompanionsMerge** | server | none | Opt-in addon over Companions: duplicates merge into stronger copies at N! pulls a level (2 x lvl1 -> lvl2, 6 x lvl5 -> lvl6). Owns no level and no stats -- a policy over the base's `moveCopies`. |
 | **CompanionsUpgrades** | server | none | Opt-in addon over Companions: pay to raise a level. Currency injected, charge-before-move, installable alongside CompanionsMerge without the two fighting over the level. |
+| **Trading** | server + client + shared | none | Player-to-player trading: the invite/offer/ready/countdown session, with what may be swapped and the swap itself injected. Any offer change clears both agreements; lines are totalled by key so duplicates cannot slip past a per-line check; the swap is one atomic call that must re-validate. |
 | **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it was extracted from disagreed about. Ships no copy. |
 | **Zone** | server | none | Subject-in-volume detection (rotated box / cylinder / sphere), enter/exit events. Watches named populations -- players by default, or bots/vehicles/anything with a position resolver -- with sets maintained by signal rather than polled. One shared Heartbeat for every zone, cached bounds with a broad-phase reject, and a cached HumanoidRootPart per player. |
 | **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
@@ -65,7 +66,7 @@ there.** Everything runs under Lune from this directory — no Studio, no Rojo, 
 lune run Tests/tests/test-zone.luau
 ```
 
-617 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
+778 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
 difference between loading a library's real source (preferred, cannot drift) and the vendored
 copies that multi-file packages still need.
 

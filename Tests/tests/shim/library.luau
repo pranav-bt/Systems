@@ -13,6 +13,12 @@
 -- that directory module and `script.Parent.Rig` is `dir/Rig.luau`. Both spell the
 -- same lookup, so one table serves as both.
 --
+-- ONE LEVEL UP AS WELL, for the multi-realm packages. `src/server/init.luau` is
+-- `Package.server`, so `script.Parent.shared` is `src/shared` -- a SIBLING DIRECTORY
+-- rather than a sibling file. A name that resolves to neither a file here nor a
+-- folder here is looked for there, and only then, so testing the server half never
+-- drags in the client half.
+--
 -- WHY IT IS A PLAIN TABLE AND NOT A LAZY PROXY. The obvious shape is an __index that
 -- loads on demand -- and it cannot work here, because Lune's `fs` yields and Luau
 -- refuses to yield across a metamethod. So the directory is read, internal requires
@@ -44,11 +50,14 @@ local ENVIRONMENT = {
 	typeof = rbx.typeof,
 	task = rbx.task,
 	Random = rbx.Random,
+	debug = rbx.debug,
 }
 
 -- dir -> { [moduleName]: module }. Cached because Roblox's require is: a module
 -- required twice is the same table, and library code relies on that for its state.
 local loaded: { [string]: { [string]: any } } = {}
+
+local loadModule
 
 -- Every `require(script.X)` / `require(script.Parent.X)` in one source, by name.
 local function dependenciesOf(source: string): { string }
@@ -67,6 +76,10 @@ local function dependenciesOf(source: string): { string }
 		end
 	end
 	return names
+end
+
+local function parentOf(dir: string): string
+	return dir:match("^(.*)/[^/]+$") or dir
 end
 
 local function moduleNames(dir: string): { string }
@@ -90,7 +103,7 @@ end
 
 local dirState: { [string]: { [string]: string } } = {}
 
-local function loadModule(dir: string, wanted: string): any
+function loadModule(dir: string, wanted: string): any
 	local modules = loaded[dir]
 	if not modules then
 		modules = {}
@@ -106,6 +119,9 @@ local function loadModule(dir: string, wanted: string): any
 		sources[name] = fs.readFile(pathFor(dir, name))
 	end
 
+	-- Sibling realms, filled in only for the ones actually required.
+	local parents: { [string]: any } = {}
+
 	local state = dirState[dir] -- name -> "running" | "done"
 	local run
 	function run(name: string, chain: { string })
@@ -118,7 +134,16 @@ local function loadModule(dir: string, wanted: string): any
 		end
 		local source = sources[name]
 		if not source then
-			return -- a require this shim cannot see; the module itself will complain
+			--[[
+				Not beside us. In a multi-realm package this is a sibling REALM --
+				`script.Parent.shared` from inside `src/server`. Resolved on demand rather
+				than eagerly, so asking for the server half never loads the client half.
+			]]
+			local sibling = `{parentOf(dir)}/{name}/init.luau`
+			if fs.isFile(sibling) then
+				parents[name] = loadModule(`{parentOf(dir)}/{name}`, "init")
+			end
+			return -- otherwise: a require this shim cannot see; the module will complain
 		end
 		state[name] = "running"
 		table.insert(chain, name)
@@ -130,7 +155,14 @@ local function loadModule(dir: string, wanted: string): any
 		local environment = table.clone(ENVIRONMENT)
 		-- One table for both spellings: an init module's children and a sibling's
 		-- Parent's children are the same set of files.
-		environment.script = if name == "init" then modules else { Parent = modules }
+		if name == "init" then
+			-- An init module's children are the files beside it; its Parent is the package,
+			-- whose children are the other realms.
+			modules.Parent = parents
+			environment.script = modules
+		else
+			environment.script = { Parent = modules }
+		end
 		--[[
 			`script.Parent.Config` already IS the module, because the table above holds
 			loaded modules rather than instances. So require hands its argument straight
