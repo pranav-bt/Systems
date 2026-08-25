@@ -144,11 +144,58 @@ function Blackboard.new(name: string, initialValues: { [string]: any }?, owner: 
 			interval == nil or type(interval) == "number",
 			`Bots.Blackboard "{name}": sensor "{key}" interval must be a number when set`
 		)
-		sensors[key] = { read = read, interval = interval or 0, nextAt = 0 }
+		--[[
+			-math.huge, not 0, so the FIRST read genuinely always runs -- the promise in the
+			header. The clock only has to be MONOTONIC, so a game on its own epoch can drive
+			this board with negative values, and `now >= 0` is false there: the sensor would
+			never fire once, and the bot would plan against an empty board forever. Identical
+			behaviour on any clock that starts above zero, which is why it went unnoticed.
+		]]
+		sensors[key] = { read = read, interval = interval or 0, nextAt = -math.huge }
 	end
 
 	function bb.removeSensor(_, key: string)
 		sensors[key] = nil
+	end
+
+	--[[
+		Marks a sensor DUE, so the next update recomputes it once. Returns whether there
+		was such a sensor, so a misspelled key is visible rather than silent.
+
+		FOR A DERIVED VALUE THAT CHANGES ON AN EVENT, which had no good home before. A
+		sensor with an `interval` POLLS it -- a wasted read every lap, plus up to one
+		interval of staleness -- and `set` PUSHES it, which is correct but puts the
+		recompute outside the update and makes every caller debounce its own bursts.
+		Invalidation is the standard shape for this: dirty flag, lazy recompute.
+
+		It composes with what the board already does, which is the point:
+
+		  * COALESCING. Fifty things tagged in one frame are one rebuild, not fifty,
+		    because this only sets a flag and the read happens in the next update.
+		  * The recompute stays INSIDE the update, where sensor reads belong, so a
+		    shared list cannot be rebuilt while a bot is mid-read of it.
+
+		IT RESETS THE TIMER, it does not insert an extra read. After the invalidated
+		sensor runs, it is rescheduled from that moment like any other -- so a long
+		interval invalidated repeatedly recomputes on demand and never faster than the
+		update it rides on.
+
+		-math.huge rather than 0: the clock only promises to be MONOTONIC, so a game on
+		its own epoch can hand this board negative values, and `now >= 0` would read as
+		"not due" -- a sensor that could never be invalidated, on the one timeline nobody
+		tests with.
+	]]
+	function bb.invalidate(_, key: string): boolean
+		assert(
+			type(key) == "string" and key ~= "",
+			`Bots.Blackboard "{name}": invalidate key must be a non-empty string`
+		)
+		local sensor = sensors[key]
+		if not sensor then
+			return false
+		end
+		sensor.nextAt = -math.huge
+		return true
 	end
 
 	-- Run every due sensor and write its value, then sweep fully-decayed facts.

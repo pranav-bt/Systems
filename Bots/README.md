@@ -199,7 +199,19 @@ local bot = Bots.Bot.new({ ..., group = squadBoard })   -- also assignable later
   written to `key` each update; `interval` (seconds) throttles expensive
   perception. Default: every update of its board. Reschedules carry ±10% phase
   jitter, so same-interval sensors across a fleet drift apart instead of spiking
-  together (the first read always runs on the first update).
+  together (the first read always runs on the first update, whatever the clock's
+  origin).
+- `invalidate(key)` — marks a sensor **due**, so the next board update recomputes
+  it once. Returns `false` if there is no such sensor, so a misspelled key is
+  visible rather than silent. **For a derived value that changes on an EVENT**,
+  which otherwise has no good home: a sensor with an `interval` polls it (a wasted
+  read every lap, plus up to one interval of staleness) and `set` pushes it
+  (correct, but the recompute happens outside the update and every caller has to
+  debounce its own bursts). Invalidation is the standard shape — dirty flag, lazy
+  recompute — and it composes with what the board already does: fifty things tagged
+  in one frame are **one** rebuild, and the read stays *inside* the update, so a
+  shared list cannot be rebuilt while a bot is mid-read of it. It resets the timer
+  rather than inserting an extra read.
 - Master and each **distinct** group board update at most once per
   `TICK_INTERVAL`, no matter how many bots share them or how often the frame
   driver runs — an `interval = 0` sensor on a shared board fires at
@@ -503,7 +515,7 @@ bot.body / bot.blackboard / bot.group / bot.tickInterval   -- yours to use
 Bots.Blackboard.new(name, initialValues?, owner?)
 bb:get(key) / bb:set(key, value) / bb.values
 bb:setFact(key, value, ttl?, confidence?) / bb:getFact(key) / bb:forget(key)
-bb:addSensor(key, read, interval?) / bb:removeSensor(key)
+bb:addSensor(key, read, interval?) / bb:removeSensor(key) / bb:invalidate(key)
 bb:update(now)
 
 -- Tokens

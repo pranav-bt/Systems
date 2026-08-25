@@ -30,77 +30,62 @@ Two consequences:
 
 ## Requested changes from consumer games
 
-Raised while building on these libraries. Neither is urgent; both are recorded
-here so the reasoning is not lost, and so whoever picks one up knows what the
-consumer already tried instead.
+Both requests recorded here were **implemented on 2026-08-25**. Kept as a record of the
+reasoning, and because each turned up something the request itself did not mention.
 
-### 1. `Blackboard:invalidate(key)` — Bots
+### 1. `Blackboard:invalidate(key)` — Bots — **done**
 
-**Ask:** mark a sensor as due, so the next board update recomputes it once.
+Marks a sensor due, so the next board update recomputes it once. Returns `false` for a key with
+no sensor, so a misspelled key is visible rather than silent.
 
-**Why.** A blackboard value that is *derived* but changes on an **event** has no
-good home today. `addSensor` polls it on a timer (a wasted lap per interval, plus
-up to one interval of staleness), and `set` pushes it (correct, but every caller
-must debounce its own bursts, and the recompute happens outside the board's
-update rather than inside it). `nextAt` is private, so a consumer holding "the
-thing changed" cannot ask the board to refresh a sensor without duplicating the
-read closure.
+The case it exists for: a derived value that changes on an **event** had no good home. A sensor
+with an `interval` polls it — a wasted read every lap, plus up to one interval of staleness —
+and `set` pushes it, which is correct but moves the recompute outside the update and makes
+every caller debounce its own bursts. Invalidation composes with what the board already does:
+bursts coalesce into one rebuild, and the read stays *inside* the drain, so a shared list
+cannot be rebuilt while a bot is mid-read of it.
 
-Invalidation is the standard shape for this — dirty flag, lazy recompute — and it
-composes with what the board already does:
+A `manual = true` flag on `addSensor` was considered and rejected for the opposite reason: put
+it on something that *does* change and you get a permanently stale board with no symptom.
 
-- **Coalescing.** 50 stations tagged in one frame become one rebuild, not 50.
-- **Recompute stays inside the drain**, where sensor reads belong, so a shared
-  list cannot be rebuilt while a bot is mid-read of it.
-- **No new failure mode.** A `manual = true` flag on `addSensor` was considered
-  and rejected for the opposite reason: put it on something that *does* change and
-  you get a permanently stale board with no symptom.
+**"Due" is spelled `-math.huge`, not `0`** — and writing the test for that found a **pre-existing
+bug**. `addSensor` initialised `nextAt = 0`, so on a clock whose values are negative (the clock
+contract only promises *monotonic*, and a game may run on its own epoch) `now >= 0` is false and
+the sensor **never fired once** — breaking the promise in Blackboard's own header that the first
+read always runs. Identical behaviour on any clock starting above zero, which is why it went
+unnoticed. Fixed in the same change.
 
-**Shape.** Three files, additive, no default behaviour change:
+`Tests/tests/test-bots-blackboard.luau`, 30 checks.
 
-| File | Change |
-| --- | --- |
-| `Bots/src/Blackboard.luau` | `function bb.invalidate(_, key) local s = sensors[key]; if s then s.nextAt = 0 end end` |
-| `Bots/src/Types.luau` | one line on the `Blackboard` type (methods are part of the typed surface) |
-| `Bots/README.md` | the `addSensor`/`removeSensor` bullets and the API summary |
+### 2. `Costs` in `PathAgent` — Pathfinding — **done**
 
-Worth a `Tests/` case: invalidate → next `update` recomputes exactly once, and an
-un-invalidated sensor with a long interval does not.
+One option field, validated at construction and threaded into every `CreatePath`. The `Label`
+half is authored on Instances in the game, as always.
 
-**Status: not needed yet.** The consumer's case (a list of workable stations
-published to the master board) turned out to be better solved by not recomputing
-at all — the owning system maintains the array as it changes and pushes with
-`master:set`. `invalidate` earns its place for the *next* derived value that is
-genuinely expensive to rebuild and changes on an event; it should not be added
-speculatively.
+Left **nil** when unset rather than defaulted to `{}`, so an agent naming no costs hands the
+engine exactly the params it handed it before the option existed. Read at every `CreatePath`
+rather than captured once, so the adaptive-spacing rebuild keeps them — an agent that forgot
+its costs the first time it stalled would path straight over what it had been avoiding.
 
-### 2. `Costs` / `Label` support in `PathAgent` — Pathfinding
+The consumer's level-authoring workaround (an invisible blocker taller than `agentHeight`) is
+still the right answer for a hard "never go here" on hand-placed geometry, and the README says
+so. `costs` earns its place when the thing should be *discouraged*, or when the geometry is
+player-authored and cannot be blocked by hand.
 
-**Ask:** let `PathAgent.Options` carry `PathfindingService` costs, i.e. pass
-`Costs = { [label] = number }` through to `CreatePath` alongside the existing
-agent parameters.
+`Tests/tests/test-pathfinding-costs.luau`, 22 checks, over a new `PathfindingService` recorder
+in the shim that captures what was asked for — an option that never reaches `CreatePath` looks
+exactly like one that works.
 
-**Why.** Without it there is no way to tell the navmesh to *avoid* something that
-is technically walkable. The consumer hit this on furniture: a crafting table with
-flat collidable parts ~3 studs up is a platform as far as `PathfindingService` is
-concerned, so a path across the room goes over the table. The waypoint sits a stud
-above the floor, an R6 humanoid cannot step onto it, and the agent wedges —
-reporting `Moving`, position frozen, stall detection never firing because each
-repath produces the same route and resets it. Diagnosed from the game side; the
-mover behaved correctly given the path it was handed.
+### Fallout worth keeping: `Tests/tests/vendor/` is gone
 
-`PathfindingModifier` + `Costs` is the engine's answer to exactly this, and it is
-the one part of `CreatePath` the options table does not expose.
+The archetype suites ran against **copies** of `Bots/src`, because the loader could not resolve
+`require(script.Parent.X)`. It can now, so `harness.luau` loads the real source and the copies
+are deleted.
 
-**Shape.** `Pathfinding/src/PathAgent.luau` — one option field, threaded into the
-`CreatePath` call in the compute closure, plus the options table in the README.
-The `Label` half is authored on Instances in the game, not here.
-
-**Consumer workaround meanwhile:** an invisible blocker taller than `agentHeight`
-over the model's footprint, so the navmesh routes around instead of over. Pure
-level authoring, no code — which is why this is a nice-to-have rather than a bug.
-
----
+This was not a tidy-up. The `nextAt` fix above landed in both the real file and the copy, and
+the mutant that reverted **the copy** survived every archetype suite — a live demonstration of
+the drift hazard the Tests README had warned about in the abstract. Do not reintroduce vendored
+copies; if a package will not load, fix the loader.
 
 ## Deliberate non-changes
 

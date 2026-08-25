@@ -1,16 +1,18 @@
--- Shared test harness: assembles the Bots facade from the vendored library
--- copies and provides check/clock helpers. Run any test file with
--- `lune run Tests/tests/test-<archetype>.luau` from the Libraries directory.
+-- Shared test harness: the Bots facade plus check/clock helpers. Run any test file
+-- with `lune run Tests/tests/test-<archetype>.luau` from the Libraries directory.
+--
+-- LOADED FROM BOTS' REAL SOURCE. This used to assemble the facade from copies under
+-- `vendor/`, because the loader could not resolve `require(script.Parent.X)` and
+-- multi-file packages therefore had to be duplicated. It can now, so the copies are
+-- gone -- and with them the hazard the repo README warned about: nothing enforced
+-- that they matched `Bots/src`, so a library fix left the copies stale and these
+-- tests kept passing against code that no longer shipped.
+--
+-- That was not theoretical. A `nextAt` fix in Blackboard landed in both places and
+-- only the real one was reachable by any test; the mutant that reverted the COPY
+-- survived, which is exactly what a silently-stale duplicate looks like.
 
-local Bots = {
-	Bot = require("./vendor/Bot"),
-	Brain = require("./vendor/Brain"),
-	Goal = require("./vendor/Goal"),
-	Action = require("./vendor/Action"),
-	Blackboard = require("./vendor/Blackboard"),
-	Tokens = require("./vendor/Tokens"),
-	Utility = require("./vendor/Utility"),
-}
+local Bots = require("./shim/library")("Bots")
 
 local Harness = {}
 Harness.Bots = Bots

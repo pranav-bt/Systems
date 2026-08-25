@@ -131,6 +131,7 @@ All tunables are per-instance options (defaults in parentheses):
 | Option | Default | Meaning |
 |---|---|---|
 | `agentRadius` / `agentHeight` / `agentCanJump` | `2` / `5` / `true` | `CreatePath` agent parameters. |
+| `costs` | none | `PathfindingModifier` costs by label: `{ Water = 20, Furniture = math.huge }`. The **only** way to say "walkable, but don't" — see below. |
 | `repathInterval` | `3.0` | Periodic recompute (chasing repaths sooner via drift). |
 | `repathThreshold` | `8` | Goal drift that forces a recompute. |
 | `waypointTimeout` | `1.5` | No-progress time that marks a segment stalled. |
@@ -142,7 +143,44 @@ All tunables are per-instance options (defaults in parentheses):
 | `priority` | `0` | Queue priority for this agent's computations; higher runs sooner when the broker is saturated. |
 | `debug` | `false` | Draw computed paths in `workspace.BotPathDebug` + print NoPath navmesh probes. |
 
----
+### `costs` — telling the navmesh what to avoid
+
+Everything else in that table describes the agent. `costs` describes the **world**, and it is
+the only way to say *walkable, but don't*.
+
+```lua
+local agent = PathAgent.new(humanoid, root, {
+    costs = { Water = 20, Furniture = math.huge },   -- math.huge = impassable
+})
+```
+
+Without it, anything technically standable is fair game. The case this was added for: a
+crafting table with flat collidable parts three studs up is a **platform** as far as
+`PathfindingService` is concerned, so a route across the room goes *over* it. The waypoint
+sits a stud above the floor, an R6 humanoid cannot step onto it, and the agent wedges —
+reporting `Moving`, position frozen, and stall detection never firing, because each repath
+produces the same route and resets it. The mover is behaving correctly given the path it was
+handed; the path is the problem.
+
+Two halves, and only one of them is here:
+
+- **the cost** is this option, passed through to `CreatePath`
+- **the label** is authored in your game, on `PathfindingModifier` instances. Nothing in this
+  package creates them.
+
+Costs are read at **every** `CreatePath`, not captured once, so the adaptive-spacing rebuild
+keeps them — an agent that forgot its costs the first time it stalled would path straight over
+the furniture it had been avoiding. Changing them needs a new agent, the same as
+`waypointSpacing`.
+
+The table is validated when the agent is built, naming the offending label, because
+`CreatePath` throws from inside the engine without saying which entry was wrong.
+
+**Before reaching for it:** an invisible blocker taller than `agentHeight` over the offending
+model's footprint also makes the navmesh route around instead of over, with no code at all.
+That is pure level authoring and it is often the right answer — `costs` earns its place when
+the thing should be *discouraged* rather than forbidden, or when the geometry is authored by
+players and cannot be blocked by hand.
 
 ---
 

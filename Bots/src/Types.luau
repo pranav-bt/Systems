@@ -50,6 +50,8 @@ export type Blackboard = {
 	forget: (self: Blackboard, key: string) -> (),
 	addSensor: (self: Blackboard, key: string, read: (owner: any, bb: Blackboard) -> any, interval: number?) -> (),
 	removeSensor: (self: Blackboard, key: string) -> (),
+	-- Mark a sensor due, so the next update recomputes it once. false = no such sensor.
+	invalidate: (self: Blackboard, key: string) -> boolean,
 	update: (self: Blackboard, now: number) -> (),
 }
 

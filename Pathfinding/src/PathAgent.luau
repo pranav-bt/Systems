@@ -36,6 +36,23 @@ export type Options = {
 	agentRadius: number?, -- CreatePath agent radius (default 2)
 	agentHeight: number?, -- CreatePath agent height (default 5)
 	agentCanJump: boolean?, -- CreatePath jump permission (default true)
+	--[[
+		PathfindingModifier costs, by Label: `{ Water = 20, Furniture = math.huge }`.
+
+		THE ONLY WAY TO SAY "WALKABLE, BUT DON'T". Without it the navmesh has no notion
+		of a surface it should avoid, and anything technically standable is fair game --
+		a crafting table with flat collidable parts three studs up is a platform as far
+		as PathfindingService is concerned, so a route across the room goes OVER it. The
+		waypoint sits a stud above the floor, an R6 humanoid cannot step onto it, and the
+		agent wedges: reporting Moving, position frozen, and stall detection never firing
+		because each repath produces the same route and resets it.
+
+		`math.huge` means impassable. The LABEL half is authored in the game, on
+		PathfindingModifier instances -- nothing here creates them.
+
+		Read at every CreatePath, so the adaptive spacing rebuild keeps them.
+	]]
+	costs: { [string]: number }?,
 	repathInterval: number?, -- periodic recompute (default 3.0; chasing repaths sooner via drift)
 	repathThreshold: number?, -- goal drift that forces a recompute (default 8)
 	waypointTimeout: number?, -- no-progress time that marks a segment stalled (default 1.5)
@@ -61,6 +78,7 @@ type Resolved = {
 	agentRadius: number,
 	agentHeight: number,
 	agentCanJump: boolean,
+	costs: { [string]: number }?,
 	repathInterval: number,
 	repathThreshold: number,
 	waypointTimeout: number,
@@ -79,10 +97,23 @@ local DEBUG_FOLDER_NAME = "BotPathDebug"
 
 local function resolve(options: Options?): Resolved
 	local given: Options = options or {}
+	local costs = given.costs
+	if costs ~= nil then
+		assert(type(costs) == "table", "Pathfinding.PathAgent: `costs` must be a table of label -> number")
+		for label, cost in costs do
+			assert(
+				type(label) == "string" and type(cost) == "number",
+				`Pathfinding.PathAgent: cost "{tostring(label)}" must be a string label mapped to a number`
+			)
+		end
+	end
 	return {
 		agentRadius = given.agentRadius or 2,
 		agentHeight = given.agentHeight or 5,
 		agentCanJump = if given.agentCanJump == nil then true else given.agentCanJump,
+		-- Left nil when unset rather than defaulted to an empty table, so an agent that
+		-- names no costs hands CreatePath exactly what it handed it before this existed.
+		costs = costs,
 		repathInterval = given.repathInterval or 3.0,
 		repathThreshold = given.repathThreshold or 8,
 		waypointTimeout = given.waypointTimeout or 1.5,
@@ -163,6 +194,9 @@ function PathAgent.new(humanoid: Humanoid, root: BasePart, options: Options?): P
 			AgentHeight = opts.agentHeight,
 			AgentCanJump = opts.agentCanJump,
 			WaypointSpacing = currentSpacing,
+			-- nil when unset, which is the same table CreatePath received before costs
+			-- were an option at all.
+			Costs = opts.costs,
 		})
 	end
 	local path = buildPath()

@@ -68,7 +68,7 @@ there.** Everything runs under Lune from this directory — no Studio, no Rojo, 
 lune run Tests/tests/test-zone.luau
 ```
 
-1091 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
+1144 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for the
 difference between loading a library's real source (preferred, cannot drift) and the vendored
 copies that multi-file packages still need.
 

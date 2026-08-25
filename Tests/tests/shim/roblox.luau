@@ -943,6 +943,25 @@ function rbx.tagListeners(tag)
 	end
 	return count
 end
+-- Every params table handed to PathfindingService:CreatePath, newest last.
+local pathParams = {}
+local pathWaypoints = {}
+local pathStatus = nil
+
+function rbx.pathParams()
+	return pathParams
+end
+
+function rbx.clearPathParams()
+	table.clear(pathParams)
+end
+
+-- What a computed path should report back. Enough to drive an agent past construction.
+function rbx.setPathResult(status, waypoints)
+	pathStatus = status
+	pathWaypoints = waypoints or {}
+end
+
 local heartbeat, fireHeartbeat, heartbeatHandlers = makeSignal()
 
 --[[
@@ -1001,6 +1020,35 @@ rbx.game = {
 			return {
 				GetGroupsAsync = function(_, _userId)
 					return {}
+				end,
+			}
+		elseif name == "PathfindingService" then
+			--[[
+				A RECORDER, not a pathfinder. There is no navmesh here and nothing to compute
+				against, so the only thing worth asserting is WHAT WAS ASKED FOR: the params
+				handed to CreatePath. That is exactly where an option like `Costs` either
+				arrives or is silently dropped, and dropping it looks identical to working
+				until a bot walks over the thing it was told to avoid.
+
+				`rbx.pathParams()` returns every params table handed over, newest last.
+			]]
+			return {
+				CreatePath = function(_, params)
+					table.insert(pathParams, params or {})
+					local path = {
+						ClassName = "Path",
+						Status = pathStatus,
+						-- Whatever the test last put in rbx.setPathWaypoints.
+						GetWaypoints = function()
+							return pathWaypoints
+						end,
+						ComputeAsync = function() end,
+						Destroy = function() end,
+					}
+					function path.IsA(_, queried)
+						return queried == "Path" or queried == "Instance"
+					end
+					return path
 				end,
 			}
 		elseif name == "PhysicsService" then
