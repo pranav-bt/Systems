@@ -38,6 +38,14 @@
 --                     an animation is authored; true warns when there is none to find.
 --   animationId       rbxassetid to load; nil means "use an Animation instance inside the model"
 --   animationName     name of that Animation instance; nil means "first Animation found in the model"
+--   groundOffset      Ground mode: how far above the surface the pet's anchor sits, in studs.
+--                     Raise it for a rig whose authored origin is at its feet.
+--   groundDistance    Ground mode: how far down to look before giving up. A pet over a chasm
+--                     keeps its last known height rather than diving after the floor.
+--   groundInterval    Ground mode: seconds between ground re-checks. NOT every frame -- the
+--                     floor under a running player changes slowly next to 60Hz. The pet still
+--                     moves smoothly between looks, because the constraint interpolates; only
+--                     the TARGET is stepped.
 --   actionFadeTime    crossfade, in seconds, between the idle loop and a one-shot action
 --   animationSpeed    AnimationTrack:AdjustSpeed value
 --   networkOwner      "Player" lets the owner's client simulate the pet (smoothest for them, since the
@@ -95,6 +103,9 @@ export type PetSettings = {
 	animationName: string?,
 	-- Crossfade when an action takes over from the idle loop and when it hands back. Short
 	-- enough to read as a reaction, long enough not to snap.
+	groundOffset: number,
+	groundDistance: number,
+	groundInterval: number,
 	actionFadeTime: number,
 	animationSpeed: number,
 	networkOwner: NetworkOwner,
@@ -114,6 +125,9 @@ export type PetOverrides = {
 	loopAnimation: boolean?,
 	animationId: string?,
 	animationName: string?,
+	groundOffset: number?,
+	groundDistance: number?,
+	groundInterval: number?,
 	actionFadeTime: number?,
 	animationSpeed: number?,
 	networkOwner: NetworkOwner?,
@@ -161,25 +175,6 @@ Config.generatedSlotRadius = 4
 Config.generatedSlotHeight = 4
 Config.generatedHeightJitter = 0.75
 Config.generatedAngleJitter = 0.35 -- radians, applied either side of the even ring spacing
-
--- ── Ground mode ───────────────────────────────────────────────────────────────
-
---[[
-	Where "the ground" is, for a Ground-mode pet.
-
-	  groundOffset    how far above the surface the pet's anchor sits, in studs. Raise it for
-	                  a rig whose authored origin is at its feet rather than its middle.
-	  groundDistance  how far down to look from the slot before giving up. A pet over a
-	                  chasm keeps its last known height rather than diving after the floor.
-	  groundInterval  seconds between ground re-checks. NOT every frame: the floor under a
-	                  running player changes slowly compared to 60Hz, and one ray per pet per
-	                  frame is a cost with nothing to show for it. The pet still moves
-	                  smoothly between checks, because the constraint interpolates -- only
-	                  the TARGET is stepped.
-]]
-Config.groundOffset = 1.5
-Config.groundDistance = 64
-Config.groundInterval = 0.1
 
 -- ── Slots ─────────────────────────────────────────────────────────────────────
 
@@ -260,6 +255,9 @@ Config.defaults = {
 	loopAnimation = nil,
 	animationId = nil,
 	animationName = nil,
+	groundOffset = 1.5,
+	groundDistance = 64,
+	groundInterval = 0.1,
 	actionFadeTime = 0.1,
 	animationSpeed = 1,
 	networkOwner = "Player",

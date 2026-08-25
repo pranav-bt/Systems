@@ -241,12 +241,15 @@ rbx.makeSignal = makeSignal
 
 local function newPart()
 	local destroying, fireDestroying = makeSignal()
+	-- CFrame and Position share one piece of storage, as they do in the engine: moving a
+	-- part by CFrame moves its Position and the other way round. Held apart, a part moved
+	-- by CFrame keeps a stale Position forever, and any test that reads the one the code
+	-- under test does not write agrees with everything.
 	local part = {
 		ClassName = "Part",
 		Name = "Part",
 		Size = v3(1, 1, 1),
-		CFrame = cf(v3(0, 0, 0), 0),
-		Position = v3(0, 0, 0),
+		_cframe = cf(v3(0, 0, 0), 0),
 		Anchored = false,
 		CanCollide = true,
 		CanQuery = true,
@@ -258,6 +261,23 @@ local function newPart()
 		Parent = nil,
 		Destroying = destroying,
 	}
+	function part.__index(self, key)
+		if key == "CFrame" then
+			return rawget(self, "_cframe")
+		elseif key == "Position" then
+			return rawget(self, "_cframe").Position
+		end
+		return rawget(part, key)
+	end
+	function part.__newindex(self, key, value)
+		if key == "CFrame" then
+			rawset(self, "_cframe", value)
+		elseif key == "Position" then
+			rawset(self, "_cframe", cf(value, rawget(self, "_cframe")._yaw))
+		else
+			rawset(self, key, value)
+		end
+	end
 	function part.Destroy(self)
 		if self._destroyed then
 			return
@@ -284,7 +304,21 @@ local function newPart()
 	function part.SetNetworkOwner() end
 	function part.Clone(self)
 		local copy = newPart()
-		for _, key in { "Name", "Size", "CFrame", "Position", "Anchored", "CanCollide", "CanQuery", "CanTouch", "CollisionGroup", "Shape", "Transparency", "Massless" } do
+		for _, key in
+			{
+				"Name",
+				"Size",
+				"CFrame",
+				"Anchored",
+				"CanCollide",
+				"CanQuery",
+				"CanTouch",
+				"CollisionGroup",
+				"Shape",
+				"Transparency",
+				"Massless",
+			}
+		do
 			copy[key] = self[key]
 		end
 		return copy
@@ -309,7 +343,7 @@ local function newPart()
 		local children = self._children
 		return if children then children[name] else nil
 	end
-	return part
+	return setmetatable(part, { __index = part.__index, __newindex = part.__newindex })
 end
 
 local function newContainer(className)
@@ -456,9 +490,7 @@ local function newContainer(className)
 		-- usually wants). Moves the pivot only: nothing here re-seats the children, so
 		-- assert on GetPivot rather than on a part's CFrame.
 		function container.PivotTo(self, target)
-			self._pivot = if getmetatable(target) == getmetatable(cf(v3(0, 0, 0), 0))
-				then target
-				else cf(target, 0)
+			self._pivot = if getmetatable(target) == getmetatable(cf(v3(0, 0, 0), 0)) then target else cf(target, 0)
 		end
 	end
 	return container
@@ -555,12 +587,16 @@ rbx.Instance = {
 			end
 			return animation
 		elseif class == "Attachment" then
+			-- CFrame and Position are ONE piece of storage in the engine, not two: writing
+			-- either moves the attachment, and reading either reflects the last write. The
+			-- shim kept them independent, so code that positions a slot with `CFrame` (which
+			-- is what Slots does) left `Position` at the origin and every slot reported the
+			-- same world point. Tests about where a pet is CANNOT FAIL against that.
 			local attachment = {
 				ClassName = "Attachment",
 				Name = "Attachment",
-				CFrame = cf(v3(0, 0, 0), 0),
-				Position = v3(0, 0, 0),
 				Parent = nil,
+				_cframe = cf(v3(0, 0, 0), 0),
 			}
 			function attachment.IsA(_, queried)
 				return queried == "Attachment" or queried == "Instance"
@@ -583,16 +619,31 @@ rbx.Instance = {
 			-- World space is the parent part's frame composed with the local offset. Enough
 			-- for a slot to say where it is; nothing here simulates.
 			function attachment.__index(self, key)
-				if key == "WorldCFrame" then
+				if key == "CFrame" then
+					return rawget(self, "_cframe")
+				elseif key == "Position" then
+					return rawget(self, "_cframe").Position
+				elseif key == "WorldCFrame" then
 					local parent = rawget(self, "Parent")
 					local base = if parent and parent.CFrame then parent.CFrame else cf(v3(0, 0, 0), 0)
-					return cf(base.Position + rawget(self, "Position"), 0)
+					return cf(base.Position + self.Position, 0)
 				elseif key == "WorldPosition" then
 					return self.WorldCFrame.Position
 				end
 				return nil
 			end
-			return setmetatable(attachment, { __index = attachment.__index })
+			-- Either name writes the shared frame, so a slot placed by CFrame reads back
+			-- through Position and vice versa.
+			function attachment.__newindex(self, key, value)
+				if key == "CFrame" then
+					rawset(self, "_cframe", value)
+				elseif key == "Position" then
+					rawset(self, "_cframe", cf(value, rawget(self, "_cframe")._yaw))
+				else
+					rawset(self, key, value)
+				end
+			end
+			return setmetatable(attachment, { __index = attachment.__index, __newindex = attachment.__newindex })
 		elseif class == "AlignPosition" or class == "AlignOrientation" or class == "WeldConstraint" then
 			-- Property bags. What matters to a test is WHICH constraint a mode created and
 			-- what it was pointed at, not that anything moved.

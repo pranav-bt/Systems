@@ -238,10 +238,21 @@ Instead the existing `AlignPosition` is switched to one-attachment mode and aime
 found by a downward ray. The pet stays as inert as a floating one, and the whole mode is
 testable without a physics world.
 
-The ray is **throttled**, not per-frame (`Config.groundInterval`, default 0.1s): the floor
-under a running player changes slowly next to 60Hz. The pet still *moves* smoothly between
-checks, because the constraint interpolates — only the target is stepped. A pet over a chasm
-keeps its last known height rather than diving after the floor.
+The ray is **throttled**, not per-frame (`groundInterval`, default 0.1s): the floor under a
+running player changes slowly next to 60Hz. The pet still *moves* smoothly between checks,
+because the constraint interpolates — only the target is stepped. A pet over a chasm keeps its
+last known height rather than diving after the floor.
+
+Three per-companion settings, alongside every other one:
+
+| | | |
+|---|---|---|
+| `groundOffset` | `1.5` | how far above the surface the anchor sits. Raise it for a rig whose authored origin is at its feet. |
+| `groundDistance` | `64` | how far down to look before giving up. |
+| `groundInterval` | `0.1` | seconds between looks. |
+
+X and Z come from the **slot**, not from the pet's current target — a ground pet walks below
+where it *would* hang, so it still fans out around its owner rather than piling onto one point.
 
 `Companions.setRaycast(fn)` replaces the finder. "Where is the floor" is a question about the
 world, and a game with voxel terrain or a moving platform layer answers it better than a
