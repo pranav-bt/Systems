@@ -239,6 +239,88 @@ rbx.makeSignal = makeSignal
 
 -- --------------------------------------------------------------- Instances --
 
+--[[
+	Moves a child between parents, the way the engine does when `.Parent` is assigned.
+
+	SETTING `.Parent` IS HOW A THING GETS ADDED. The shim used to treat it as a plain field,
+	so `Instance.new("Folder").Parent = ReplicatedStorage` left a folder that nothing could
+	find -- which meant no test in this repo could see a library provision its own transport,
+	the one thing the "own your transport" convention actually asks of them. Three libraries
+	had that path uncovered.
+
+	Tolerates a parent that is not a real instance (`{ Name = "Character" }` and friends):
+	bookkeeping only happens where there is a child list to keep.
+]]
+local function reparent(child, newParent)
+	local oldParent = rawget(child, "_parent")
+	if oldParent == newParent then
+		return
+	end
+
+	if type(oldParent) == "table" then
+		local kids = rawget(oldParent, "_kids")
+		if kids then
+			local index = table.find(kids, child)
+			if index then
+				table.remove(kids, index)
+			end
+			local fire = rawget(oldParent, "_fireChildRemoved")
+			if fire then
+				fire(child)
+			end
+		end
+	end
+
+	--[[
+		Under a PRIVATE key, never the public `Parent`. __newindex only fires for a key that is
+		absent, so writing `Parent` onto the table here would make the FIRST assignment work
+		and every one after it silently skip the bookkeeping -- which is exactly the bug this
+		helper was written to fix.
+	]]
+	rawset(child, "_parent", newParent)
+
+	if type(newParent) == "table" then
+		local kids = rawget(newParent, "_kids")
+		if kids and not table.find(kids, child) then
+			table.insert(kids, child)
+			local fire = rawget(newParent, "_fireChildAdded")
+			if fire then
+				fire(child)
+			end
+		end
+	end
+end
+
+--[[
+	Gives a plain instance table the same `.Parent` behaviour parts and containers have.
+
+	Applied to EVERYTHING `Instance.new` hands back, because the alternative is remembering to
+	write the metatable into each new class -- and the class that gets forgotten is one whose
+	parenting silently does nothing, which reads as a library that never provisioned anything.
+
+	Anything already carrying a metatable is left alone: it has its own, richer one.
+]]
+local function withParenting(instance)
+	if getmetatable(instance) then
+		return instance
+	end
+	return setmetatable(instance, {
+		__index = function(self, key)
+			if key == "Parent" then
+				return rawget(self, "_parent")
+			end
+			return nil
+		end,
+		__newindex = function(self, key, value)
+			if key == "Parent" then
+				reparent(self, value)
+			else
+				rawset(self, key, value)
+			end
+		end,
+	})
+end
+
 local function newPart()
 	local destroying, fireDestroying = makeSignal()
 	-- CFrame and Position share one piece of storage, as they do in the engine: moving a
@@ -250,6 +332,7 @@ local function newPart()
 		Name = "Part",
 		Size = v3(1, 1, 1),
 		_cframe = cf(v3(0, 0, 0), 0),
+		_kids = {},
 		Anchored = false,
 		CanCollide = true,
 		CanQuery = true,
@@ -266,14 +349,18 @@ local function newPart()
 			return rawget(self, "_cframe")
 		elseif key == "Position" then
 			return rawget(self, "_cframe").Position
+		elseif key == "Parent" then
+			return rawget(self, "_parent")
 		end
-		return rawget(part, key)
+		return nil
 	end
 	function part.__newindex(self, key, value)
 		if key == "CFrame" then
 			rawset(self, "_cframe", value)
 		elseif key == "Position" then
 			rawset(self, "_cframe", cf(value, rawget(self, "_cframe")._yaw))
+		elseif key == "Parent" then
+			reparent(self, value)
 		else
 			rawset(self, key, value)
 		end
@@ -331,17 +418,15 @@ local function newPart()
 		return out
 	end
 	function part.Add(self, child)
-		local kids = rawget(self, "_kids")
-		if not kids then
-			kids = {}
-			rawset(self, "_kids", kids)
-		end
-		table.insert(kids, child)
 		child.Parent = self
 	end
 	function part.FindFirstChild(self, name)
-		local children = self._children
-		return if children then children[name] else nil
+		for _, kid in rawget(self, "_kids") or {} do
+			if kid.Name == name then
+				return kid
+			end
+		end
+		return nil
 	end
 	return setmetatable(part, { __index = part.__index, __newindex = part.__newindex })
 end
@@ -356,6 +441,9 @@ local function newContainer(className)
 		_kids = {},
 		ChildAdded = childAdded,
 		ChildRemoved = childRemoved,
+		-- Read by `reparent`, which has no access to these closures otherwise.
+		_fireChildAdded = fireChildAdded,
+		_fireChildRemoved = fireChildRemoved,
 	}
 	function container.IsA(_, class)
 		return class == className or class == "Instance"
@@ -460,18 +548,13 @@ local function newContainer(className)
 		end
 		return copy
 	end
-	function container.Add(self, child)
-		table.insert(self._kids, child)
-		child.Parent = self
-		fireChildAdded(child)
+	-- Both are now thin wrappers: assigning `.Parent` does the bookkeeping and fires the
+	-- signals, so these cannot drift from what a library setting `.Parent` itself gets.
+	function container.Add(_, child)
+		child.Parent = container
 	end
-	function container.Remove(self, child)
-		local index = table.find(self._kids, child)
-		if index then
-			table.remove(self._kids, index)
-		end
+	function container.Remove(_, child)
 		child.Parent = nil
-		fireChildRemoved(child)
 	end
 	if className == "Model" then
 		container.PrimaryPart = nil
@@ -493,7 +576,21 @@ local function newContainer(className)
 			self._pivot = if getmetatable(target) == getmetatable(cf(v3(0, 0, 0), 0)) then target else cf(target, 0)
 		end
 	end
-	return container
+	return setmetatable(container, {
+		__index = function(self, key)
+			if key == "Parent" then
+				return rawget(self, "_parent")
+			end
+			return nil
+		end,
+		__newindex = function(self, key, value)
+			if key == "Parent" then
+				reparent(self, value)
+			else
+				rawset(self, key, value)
+			end
+		end,
+	})
 end
 
 -- Declared before the services close over them. ReplicatedStorage is a real
@@ -517,8 +614,8 @@ local function newBindable()
 	return bindable
 end
 
-rbx.Instance = {
-	new = function(class)
+local function makeInstance(class)
+	do
 		if class == "Part" then
 			return newPart()
 		elseif class == "BindableEvent" then
@@ -619,12 +716,14 @@ rbx.Instance = {
 			-- World space is the parent part's frame composed with the local offset. Enough
 			-- for a slot to say where it is; nothing here simulates.
 			function attachment.__index(self, key)
-				if key == "CFrame" then
+				if key == "Parent" then
+					return rawget(self, "_parent")
+				elseif key == "CFrame" then
 					return rawget(self, "_cframe")
 				elseif key == "Position" then
 					return rawget(self, "_cframe").Position
 				elseif key == "WorldCFrame" then
-					local parent = rawget(self, "Parent")
+					local parent = rawget(self, "_parent")
 					local base = if parent and parent.CFrame then parent.CFrame else cf(v3(0, 0, 0), 0)
 					return cf(base.Position + self.Position, 0)
 				elseif key == "WorldPosition" then
@@ -639,6 +738,8 @@ rbx.Instance = {
 					rawset(self, "_cframe", value)
 				elseif key == "Position" then
 					rawset(self, "_cframe", cf(value, rawget(self, "_cframe")._yaw))
+				elseif key == "Parent" then
+					reparent(self, value)
 				else
 					rawset(self, key, value)
 				end
@@ -764,7 +865,13 @@ rbx.Instance = {
 			end
 			return mesh
 		end
-		error(`rbx shim: Instance.new("{class}") is not implemented`)
+	end
+	error(`rbx shim: Instance.new("{class}") is not implemented`)
+end
+
+rbx.Instance = {
+	new = function(class)
+		return withParenting(makeInstance(class))
 	end,
 }
 
@@ -838,10 +945,23 @@ function rbx.tagListeners(tag)
 end
 local heartbeat, fireHeartbeat, heartbeatHandlers = makeSignal()
 
+--[[
+	Who `Players.LocalPlayer` answers with.
+
+	A headless run has no client, so a test playing the part of one says which player it is.
+	Resolved live through the service table's metatable, so a test can name its player at any
+	point before the client module actually reads it.
+]]
+local localPlayer = nil
+
+function rbx.setLocalPlayer(player)
+	localPlayer = player
+end
+
 rbx.game = {
 	GetService = function(_, name)
 		if name == "Players" then
-			return {
+			return setmetatable({
 				GetPlayers = function()
 					local out = {}
 					for _, player in playerList do
@@ -859,7 +979,18 @@ rbx.game = {
 				end,
 				PlayerAdded = playerAdded,
 				PlayerRemoving = playerRemoving,
-			}
+			}, {
+				-- LocalPlayer resolves LIVE. A client module captures this service table at
+				-- require time and reads LocalPlayer later, inside start(), so a field baked in
+				-- here would answer with whatever was set before the require -- an ordering
+				-- trap in every test that names its player afterwards.
+				__index = function(_, key)
+					if key == "LocalPlayer" then
+						return localPlayer
+					end
+					return nil
+				end,
+			})
 		elseif name == "RunService" then
 			return { Heartbeat = heartbeat }
 		elseif name == "ReplicatedStorage" then

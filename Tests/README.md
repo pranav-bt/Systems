@@ -22,9 +22,14 @@ lune run Tests/tests/test-trading-client.luau    # its client transport         
 lune run Tests/tests/test-mech.luau           # AI suite: Mech archetype        18
 lune run Tests/tests/test-castle.luau         # AI suite: Castle archetype      19
 lune run Tests/tests/test-bnb.luau            # AI suite: BnB archetype         21
+lune run Tests/tests/test-levelling-curve.luau   # the XP curve, pure              57
+lune run Tests/tests/test-levelling.luau         # the grant door + tempo          84
+lune run Tests/tests/test-levelling-client.luau  # its client mirror               35
+lune run Tests/tests/test-rebirth.luau           # the ladder + the trade          81
+lune run Tests/tests/test-rebirth-client.luau    # its client state                35
 ```
 
-778 checks at present, all passing. **Every realm of every library is covered** --
+1091 checks at present, all passing. **Every realm of every library is covered** --
 server, client and shared -- because "tested" meaning only the server half is how a client
 typo survives a green run. Each file prints `N passed, M failed` and exits non-zero
 on failure.
@@ -39,6 +44,7 @@ on failure.
 | `tests/harness.luau` | assembles the `Bots` facade and provides `check` / clock helpers |
 | `tests/test-*.luau` | one file per archetype or per library concern |
 | `tests/shim/roblox.luau` | minimal Roblox stand-in: `Vector3`, `CFrame`, `Instance.new`, `Players` / `RunService` / `CollectionService`, `task`, and a **manually stepped** `Heartbeat` |
+| `tests/shim/` fidelity | see below — three gaps found by mutation testing, each of which made a whole class of assertion unfalsifiable |
 | `tests/shim/library.luau` | loads a library's real `src/init.luau` under that shim |
 | `tests/vendor/` | copies of `Bots/src`, with `require(script.Parent.X)` rewritten to `require("./X")` |
 
@@ -55,6 +61,22 @@ drift. This works for any single-file library whose only external references are
 **Fallback — `vendor/`.** Multi-file packages use `require(script.Parent.X)`, and `script` is a
 Roblox global that does not exist under Lune, so those requires have to be resolved somehow.
 `vendor/` holds copies with them rewritten. Bots needs this; the loader does not handle it.
+
+## Shim fidelity is load-bearing
+
+Three gaps were found by mutation testing — each one a place where the shim disagreed with the
+engine in a way that made assertions **pass no matter what the library did**. They are worth
+knowing about, because the next one will look just as harmless:
+
+| gap | what it hid |
+|---|---|
+| `Attachment` / `Part` held `CFrame` and `Position` as **independent** fields | they are one piece of storage in the engine. Slot attachments are positioned by writing `CFrame`, so every slot's `Position` stayed at the origin and every slot reported the same world point. Any assertion about *where* something sits agreed with everything. |
+| assigning `.Parent` did **not** attach the child | setting `.Parent` *is* how a thing gets added. Nothing could see a library provision its own transport — the one thing the "own your transport" convention asks of them — leaving that path uncovered in three libraries. |
+| signals keyed by function rather than an **array** | Luau caches closures with identical upvalues, so a set silently deduped double-`Connect`s that Roblox honours. |
+
+The `.Parent` fix has a trap of its own worth recording: the parent is held under a **private**
+key, because `__newindex` only fires for a key that is *absent*. Writing `Parent` onto the table
+directly makes the first assignment work and every one after it silently skip the bookkeeping.
 
 **`vendor/`'s hazard is drift.** Nothing enforces that it matches `Bots/src`, so a library
 change leaves the copies stale and the tests keep passing against code that no longer ships.
