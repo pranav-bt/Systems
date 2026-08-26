@@ -37,7 +37,28 @@ export type Config = {
 
 local samples: { [Player]: { number } } = {}
 local averages: { [Player]: number } = {}
+--[[
+	Per player, the clock values sent that have not been echoed yet.
+
+	THIS IS WHAT MAKES THE MEASUREMENT THE SERVER'S. Without it `OnServerEvent` accepted any
+	number and treated `os.clock() - it` as a round trip, so a client that ignored the pings
+	entirely -- or had never been sent one -- could report whatever latency it liked, bounded
+	only by MAX_SANE_LATENCY. That number is consumed by LagCompensation as the amount it
+	rewinds the world before validating a hit, which makes "the client picks it" the whole
+	shape of a lag-compensation exploit.
+
+	An echo now has to carry a value this server actually sent, and the value is consumed on
+	use. So a forged echo has to guess an exact float, a replayed one matches nothing, and
+	spam gets at most one sample per ping.
+
+	A LIST RATHER THAN A SINGLE VALUE, because an echo can legitimately arrive after the next
+	ping has gone out -- a player slower than the ping interval would otherwise never produce
+	a sample at all and sit on the default forever. Bounded by pruning: a value older than
+	MAX_SANE_LATENCY can no longer produce an acceptable sample, so it is dropped.
+]]
+local outstanding: { [Player]: { number } } = {}
 local started = false
+local pingLoop: thread? = nil
 
 local TimeSync = {}
 
@@ -67,11 +88,46 @@ end
 local function setup(player: Player)
 	samples[player] = {}
 	averages[player] = DEFAULT_LATENCY
+	outstanding[player] = {}
 end
 
 local function cleanup(player: Player)
 	samples[player] = nil
 	averages[player] = nil
+	outstanding[player] = nil
+end
+
+--[[
+	Records that we sent this value, and forgets any too old to be echoed usefully.
+
+	The prune is what bounds the list: at a 1s interval and a 1s sanity limit it holds one or
+	two entries, and a client that never echoes cannot make it grow.
+]]
+local function noteSent(player: Player, clockValue: number)
+	local pending = outstanding[player]
+	if not pending then
+		return
+	end
+	table.insert(pending, clockValue)
+	local cutoff = clockValue - MAX_SANE_LATENCY
+	while pending[1] and pending[1] < cutoff do
+		table.remove(pending, 1)
+	end
+end
+
+-- Consumes a matching outstanding ping, or reports that there was none. Consuming is what
+-- stops a single ping being echoed repeatedly to flood the sample window.
+local function claimSent(player: Player, clockValue: number): boolean
+	local pending = outstanding[player]
+	if not pending then
+		return false
+	end
+	local index = table.find(pending, clockValue)
+	if not index then
+		return false
+	end
+	table.remove(pending, index)
+	return true
 end
 
 local function ensureRemote(parent: Instance, name: string): UnreliableRemoteEvent
@@ -127,21 +183,52 @@ function TimeSync.start(config: Config?)
 		if typeof(sentClock) ~= "number" then
 			return
 		end
+		-- Unmatched means forged, replayed, or so late it can no longer be a real sample.
+		-- All three are the same thing from here: not a measurement.
+		if not claimSent(player, sentClock) then
+			return
+		end
 		local rtt = os.clock() - sentClock
 		if rtt >= 0 and rtt <= MAX_SANE_LATENCY then
 			recordSample(player, rtt)
 		end
 	end)
 
-	task.spawn(function()
+	local function pingEveryone()
+		local now = os.clock()
+		for _, player in Players:GetPlayers() do
+			noteSent(player, now)
+			pingEvent:FireClient(player, now)
+		end
+	end
+
+	pingLoop = task.spawn(function()
+		-- Immediately, then on the interval. Waiting first left every joining player on the
+		-- assumed default for a full interval before anything was measured.
+		pingEveryone()
 		while true do
 			task.wait(pingInterval)
-			local now = os.clock()
-			for _, player in Players:GetPlayers() do
-				pingEvent:FireClient(player, now)
-			end
+			pingEveryone()
 		end
 	end)
+end
+
+--[[
+	Stops pinging and forgets every measurement.
+
+	Exists because the loop had no way out: `while true do task.wait() end` on a spawned
+	thread runs for the life of the server, which is fine in a live game and means the module
+	cannot be stopped, restarted, or torn down anywhere else.
+]]
+function TimeSync.stop()
+	if pingLoop then
+		task.cancel(pingLoop)
+		pingLoop = nil
+	end
+	started = false
+	table.clear(samples)
+	table.clear(averages)
+	table.clear(outstanding)
 end
 
 return TimeSync

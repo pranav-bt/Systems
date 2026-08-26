@@ -65,6 +65,27 @@ local CONFIG = {
 
 	-- DataStore name.
 	DATASTORE_NAME = "LobbyHeatmap_v1",
+
+	--[[
+		Seconds between automatic flushes.
+
+		The only trigger used to be game:BindToClose, which meant every session a server ever
+		recorded sat in memory until it shut down -- so a crash or an unclean close lost all of
+		it, and the single write had to fit inside BindToClose's ~30s budget. Flushing
+		periodically bounds the loss to one interval and leaves shutdown with little to do.
+
+		0 disables the timer, leaving the shutdown flush as the only one.
+	]]
+	FLUSH_INTERVAL = 120,
+
+	--[[
+		Sessions per DataStore key before rotating to a new one.
+
+		Everything used to merge into a single "HeatmapBatch_<JobId>" for the life of the
+		server, and a DataStore value is capped at 4MB -- so a busy server eventually built a
+		value too large to store, which then failed to write. Rotating bounds each key.
+	]]
+	MAX_SESSIONS_PER_KEY = 150,
 }
 
 --------------------------------------------------------------------------------
@@ -89,6 +110,7 @@ local lastSampleTime = {} -- [userId] = os.clock()
 -- Sessions move here on PlayerRemoving, keyed by anonymous GUID.
 -- BindToClose drains this alongside any remaining activeSessions.
 local pendingFlush = {} -- [guid]   = { journey: RLE, meta: {...} }
+local flushLoop: thread? = nil
 
 --------------------------------------------------------------------------------
 -- Voxelization
@@ -196,7 +218,41 @@ end
 -- Called exclusively from BindToClose — no periodic timer.
 --------------------------------------------------------------------------------
 
-local function flush()
+--[[
+	The key currently being written to, and how many sessions have landed in it.
+
+	Rotation is counted rather than measured, because there is no way to ask how large a value
+	will be before writing it. A count is a proxy, but it is a bounded one -- and the failure
+	it prevents (a value over 4MB) is unrecoverable in the old design, since the write that
+	discovers it is also the write that discarded the batch.
+]]
+local keyIndex = 0
+local sessionsInKey = 0
+
+local function currentKey(): string
+	return `HeatmapBatch_{game.JobId}_{keyIndex}`
+end
+
+--[[
+	Writes everything pending, and KEEPS IT if the write does not land.
+
+	The order here is the whole fix. This used to drain `pendingFlush` into a local batch
+	before attempting the write, so a failure -- throttling, a value over the size limit, the
+	service being down -- left the sessions already gone from the queue and written by nobody.
+	DataStore throttling is normal operation rather than an exceptional event, so that was
+	guaranteed data loss on a schedule.
+
+	Now the batch is only cleared once the write has succeeded. A failed flush leaves
+	everything queued for the next one.
+
+	Returns whether it wrote, so the caller can say something true about it.
+]]
+local function flush(): boolean
+	-- Archive any players still in-server, so their partial journeys are included.
+	for userId in activeSessions do
+		archiveSession(userId)
+	end
+
 	local batch = {
 		meta = {
 			lastUpdated = os.time(),
@@ -206,44 +262,47 @@ local function flush()
 		sessions = {},
 	}
 
-	-- Archive any players still in-server at shutdown time.
-	for userId in activeSessions do
-		archiveSession(userId)
-	end
-
-	-- Drain pendingFlush into the batch.
+	local count = 0
 	for guid, session in pendingFlush do
 		batch.sessions[guid] = session
-		pendingFlush[guid] = nil
+		count += 1
 	end
 
-	-- Skip write if nothing to record.
-	if next(batch.sessions) == nil then
-		return
+	if count == 0 then
+		return true
 	end
 
+	-- Rotate before writing rather than after, so this batch goes to a key that has room.
+	if sessionsInKey > 0 and sessionsInKey + count > CONFIG.MAX_SESSIONS_PER_KEY then
+		keyIndex += 1
+		sessionsInKey = 0
+	end
+
+	local key = currentKey()
 	local success, err = pcall(function()
-		getDataStore():UpdateAsync("HeatmapBatch_" .. game.JobId, function(oldValue)
+		getDataStore():UpdateAsync(key, function(oldValue)
 			local existing = oldValue or { meta = batch.meta, sessions = {} }
-
-			-- Merge sessions. GUID keys ensure no collisions.
+			-- Refreshed on every merge. Stamped once, it left a reader with no way to tell a
+			-- live server's batch from an abandoned one.
+			existing.meta = batch.meta
 			for guid, session in batch.sessions do
 				existing.sessions[guid] = session
 			end
-
 			return existing
 		end)
 	end)
 
 	if not success then
-		warn("[Heatmap] Flush failed:", err)
+		-- Left in pendingFlush deliberately: the next flush retries it.
+		warn(`[Heatmap] Flush failed, {count} session(s) kept for the next attempt:`, err)
+		return false
 	end
 
-	local numberOfSessions = 0
-	for _ in batch.sessions do
-		numberOfSessions += 1
+	for guid in batch.sessions do
+		pendingFlush[guid] = nil
 	end
-	print("[Heatmap] Flush complete. Recorded", tostring(numberOfSessions), "sessions.")
+	sessionsInKey += count
+	return success
 end
 
 --------------------------------------------------------------------------------
@@ -341,7 +400,49 @@ function Heatmap.init()
 
 	startSamplingLoop()
 
-	game:BindToClose(flush)
+	--[[
+		The periodic flush. Without it, the shutdown hook below was the only writer, and a
+		server that crashed took every session with it.
+	]]
+	if CONFIG.FLUSH_INTERVAL > 0 then
+		flushLoop = task.spawn(function()
+			while true do
+				task.wait(CONFIG.FLUSH_INTERVAL)
+				flush()
+			end
+		end)
+	end
+
+	--[[
+		Shutdown still flushes, and now RETRIES once. There is no later attempt after this one,
+		so the usual "leave it queued for next time" has nowhere to leave it -- a single retry
+		covers the throttle that would otherwise be the last word.
+	]]
+	game:BindToClose(function()
+		if not flush() then
+			task.wait(1)
+			flush()
+		end
+	end)
+end
+
+--[[
+	Writes everything pending now. Returns whether it landed.
+
+	Public because a host may want to flush on its own schedule -- a round ending, a lobby
+	emptying -- and because a module whose only trigger is server shutdown cannot be exercised
+	by anything, including a test.
+]]
+function Heatmap.flush(): boolean
+	return flush()
+end
+
+-- Stops the periodic flush. Pairs with init for a host that tears the system down.
+function Heatmap.stop()
+	if flushLoop then
+		task.cancel(flushLoop)
+		flushLoop = nil
+	end
 end
 
 --[[

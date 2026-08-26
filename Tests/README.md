@@ -29,9 +29,13 @@ lune run Tests/tests/test-rebirth.luau           # the ladder + the trade       
 lune run Tests/tests/test-rebirth-client.luau    # its client state                35
 lune run Tests/tests/test-bots-blackboard.luau   # sensors + invalidate            30
 lune run Tests/tests/test-pathfinding-costs.luau # what PathAgent asks CreatePath  22
+lune run Tests/tests/test-objectpool.luau        # instance reuse + cap policy     65
+lune run Tests/tests/test-zone-query.luau        # stateless geometry queries      44
+lune run Tests/tests/test-timesync.luau          # latency, and who names it       26
+lune run Tests/tests/test-heatmap.luau           # RLE + the flush failure path    24
 ```
 
-1144 checks at present, all passing. **Every realm of every library is covered** --
+1303 checks at present, all passing. **Every realm of every library is covered** --
 server, client and shared -- because "tested" meaning only the server half is how a client
 typo survives a green run. Each file prints `N passed, M failed` and exits non-zero
 on failure.
@@ -51,6 +55,11 @@ on failure.
 
 The manual `Heartbeat` is the point of the shim: tests drive time exactly, so interval, drift
 and phase behaviour is **asserted** rather than sampled.
+
+**Failure paths need to be drivable too.** `rbx.failDataStore(n)` makes the next n DataStore
+writes throw the way the real service does. What a library does when a write does not land is
+invisible against a stub that always succeeds — and driving it is what turned "Heatmap probably
+loses data on a throttle" into a test, and then into a fix.
 
 ## How a library gets loaded
 

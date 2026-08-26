@@ -850,19 +850,19 @@ local function makeInstance(class)
 				return queried == "StringValue" or queried == "Instance"
 			end
 			return value
-		elseif class == "RemoteEvent" then
+		elseif class == "RemoteEvent" or class == "UnreliableRemoteEvent" then
 			local toServer, fireToServer, serverHandlers = makeSignal()
 			local toClient, fireToClient = makeSignal()
 			local remote = {
-				ClassName = "RemoteEvent",
-				Name = "RemoteEvent",
+				ClassName = class,
+				Name = class,
 				Parent = nil,
 				OnServerEvent = toServer,
 				OnClientEvent = toClient,
 				_serverHandlers = serverHandlers,
 			}
-			function remote.IsA(_, queried)
-				return queried == "RemoteEvent" or queried == "Instance"
+			function remote.IsA(self, queried)
+				return queried == rawget(self, "ClassName") or queried == "Instance"
 			end
 			--[[
 				FireClient LOGS who it was sent to, then fires OnClientEvent WITHOUT the
@@ -1049,6 +1049,35 @@ function rbx.setTime(value)
 	gameTime = value
 end
 
+-- game:BindToClose handlers, run only when a test asks.
+local closeHandlers = {}
+
+function rbx.fireBindToClose()
+	for _, fn in closeHandlers do
+		fn()
+	end
+end
+
+-- DataStore stand-in state. See GetService("DataStoreService").
+local dataStores = {}
+local dataStoreFailures = 0
+local dataStoreWrites = 0
+local guidCounter = 0
+
+-- Make the next `count` DataStore writes throw, so a test can drive the failure path.
+function rbx.failDataStore(count)
+	dataStoreFailures = count or 1
+end
+
+function rbx.dataStoreWrites()
+	return dataStoreWrites
+end
+
+function rbx.dataStoreValue(storeName, key)
+	local store = dataStores[storeName]
+	return if store then store._values[key] else nil
+end
+
 local heartbeat, fireHeartbeat, heartbeatHandlers = makeSignal()
 
 --[[
@@ -1065,6 +1094,13 @@ function rbx.setLocalPlayer(player)
 end
 
 rbx.game = {
+	JobId = "test-job-id",
+	PlaceVersion = 1,
+	-- Recorded rather than run: a shutdown hook is a thing a library REGISTERS, and whether
+	-- it registered one is the assertion worth making. rbx.fireBindToClose() runs them.
+	BindToClose = function(_, fn)
+		table.insert(closeHandlers, fn)
+	end,
 	GetService = function(_, name)
 		if name == "Players" then
 			return setmetatable({
@@ -1107,6 +1143,58 @@ rbx.game = {
 			return {
 				GetGroupsAsync = function(_, _userId)
 					return {}
+				end,
+			}
+		elseif name == "DataStoreService" then
+			--[[
+				An in-memory DataStore whose failures a test can DRIVE.
+
+				The interesting behaviour of anything that writes to a DataStore is what it does
+				when the write does not land -- throttled, over the size limit, service down --
+				and that path is invisible against a stub that always succeeds. `rbx.failDataStore(n)`
+				makes the next n writes throw the way the real service does.
+			]]
+			return {
+				GetDataStore = function(_, storeName)
+					local store = dataStores[storeName]
+					if not store then
+						store = { _name = storeName, _values = {} }
+						function store.UpdateAsync(_, key, transform)
+							dataStoreWrites += 1
+							if dataStoreFailures > 0 then
+								dataStoreFailures -= 1
+								error(`DataStore request was throttled (simulated) for key {key}`, 0)
+							end
+							local updated = transform(store._values[key])
+							store._values[key] = updated
+							return updated
+						end
+						function store.GetAsync(_, key)
+							return store._values[key]
+						end
+						function store.SetAsync(_, key, value)
+							dataStoreWrites += 1
+							if dataStoreFailures > 0 then
+								dataStoreFailures -= 1
+								error("DataStore request was throttled (simulated)", 0)
+							end
+							store._values[key] = value
+						end
+						dataStores[storeName] = store
+					end
+					return store
+				end,
+			}
+		elseif name == "HttpService" then
+			return {
+				-- Sequential rather than random: a test asserting on session identity needs
+				-- reproducible keys, and nothing here depends on them being unguessable.
+				GenerateGUID = function()
+					guidCounter += 1
+					return `guid-{guidCounter}`
+				end,
+				JSONEncode = function(_, value)
+					return tostring(value)
 				end,
 			}
 		elseif name == "PathfindingService" then
