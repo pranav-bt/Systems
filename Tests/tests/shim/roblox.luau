@@ -82,6 +82,11 @@ end
 function Vector3.__index(self, key)
 	if key == "Magnitude" then
 		return math.sqrt(self.X ^ 2 + self.Y ^ 2 + self.Z ^ 2)
+	elseif key == "Unit" then
+		local magnitude = self.Magnitude
+		-- A zero vector has no direction. NaN is what the engine gives back, and library code
+		-- that guards on Magnitude before asking never sees it.
+		return v3(self.X / magnitude, self.Y / magnitude, self.Z / magnitude)
 	end
 	return Vector3[key]
 end
@@ -140,7 +145,9 @@ function CFrame.__mul(a, b)
 	return a.Position + rotate(a, b)
 end
 function CFrame.__index(self, key)
-	if key == "RightVector" then
+	if key == "Rotation" then
+		return cf(v3(0, 0, 0), rawget(self, "_yaw"))
+	elseif key == "RightVector" then
 		return rawget(self, "_right")
 	elseif key == "UpVector" then
 		return rawget(self, "_up")
@@ -150,6 +157,25 @@ function CFrame.__index(self, key)
 	end
 	return CFrame[key]
 end
+--[[
+	Rotation as a CFrame at the origin, and a yaw-only Lerp between two of them.
+
+	This shim carries a yaw and nothing else, so "rotation" is that angle at the origin and
+	the interpolation is on the angle -- taking the short way round, which is what the engine's
+	quaternion slerp does and what a platform turning a corner needs. Enough to tell "it turned
+	toward its heading" from "it did not"; not enough for pitch or roll, which nothing here has.
+]]
+function CFrame.Lerp(self, goal, alpha)
+	local from, to = rawget(self, "_yaw"), rawget(goal, "_yaw")
+	local delta = (to - from) % (2 * math.pi)
+	if delta > math.pi then
+		delta -= 2 * math.pi
+	end
+	local position = rawget(self, "Position")
+	local goalPosition = rawget(goal, "Position")
+	return cf(position + (goalPosition - position) * alpha, from + delta * alpha)
+end
+
 function CFrame.Inverse(self)
 	local inverted = cf(v3(0, 0, 0), -self._yaw)
 	return cf(rotate(inverted, self.Position * -1), -self._yaw)
@@ -181,6 +207,19 @@ rbx.CFrame = {
 		it, and silently returning identity would hide exactly the degenerate-curve case a test
 		is trying to catch.
 	]]
+	--[[
+		Face `target` from `position`. Yaw only, like everything else here.
+
+		A zero direction errors rather than quietly returning identity, the same as lookAlong:
+		"face nowhere" is a caller bug and hiding it hides the degenerate case a test is
+		usually hunting.
+	]]
+	lookAt = function(position, target, _up)
+		local direction = target - position
+		local flat = direction.X * direction.X + direction.Z * direction.Z
+		assert(flat > 0, "CFrame.lookAt: position and target must differ in the XZ plane")
+		return cf(position, math.atan2(direction.X, direction.Z))
+	end,
 	lookAlong = function(position, direction)
 		assert(direction ~= nil, "CFrame.lookAlong: a direction is required")
 		local flat = direction.X * direction.X + direction.Z * direction.Z
@@ -344,6 +383,34 @@ local function reparent(child, newParent)
 		helper was written to fix.
 	]]
 	rawset(child, "_parent", newParent)
+
+	--[[
+		Descendant events fan UP the ancestry and cover the WHOLE SUBTREE being moved, as they
+		do in the engine: parenting a folder that already has children announces the folder and
+		everything inside it, to every ancestor. Library code that watches `workspace` for an
+		authored folder appearing depends on exactly that -- the folder is usually populated
+		first and parented last.
+	]]
+	local moved = { child }
+	local scan = 1
+	while scan <= #moved do
+		local node = moved[scan]
+		scan += 1
+		for _, kid in rawget(node, "_kids") or {} do
+			table.insert(moved, kid)
+		end
+	end
+
+	local ancestor = newParent
+	while type(ancestor) == "table" do
+		local fire = rawget(ancestor, "_fireDescendantAdded")
+		if fire then
+			for _, node in moved do
+				fire(node)
+			end
+		end
+		ancestor = rawget(ancestor, "_parent")
+	end
 
 	if type(newParent) == "table" then
 		local kids = rawget(newParent, "_kids")
@@ -509,6 +576,8 @@ end
 local function newContainer(className)
 	local childAdded, fireChildAdded = makeSignal()
 	local childRemoved, fireChildRemoved = makeSignal()
+	local descendantAdded, fireDescendantAdded = makeSignal()
+	local descendantRemoving, fireDescendantRemoving = makeSignal()
 	local container = {
 		ClassName = className,
 		Name = className,
@@ -516,9 +585,13 @@ local function newContainer(className)
 		_kids = {},
 		ChildAdded = childAdded,
 		ChildRemoved = childRemoved,
+		DescendantAdded = descendantAdded,
+		DescendantRemoving = descendantRemoving,
 		-- Read by `reparent`, which has no access to these closures otherwise.
 		_fireChildAdded = fireChildAdded,
 		_fireChildRemoved = fireChildRemoved,
+		_fireDescendantAdded = fireDescendantAdded,
+		_fireDescendantRemoving = fireDescendantRemoving,
 	}
 	function container.IsA(_, class)
 		return class == className or class == "Instance"
@@ -1134,7 +1207,10 @@ rbx.game = {
 				end,
 			})
 		elseif name == "RunService" then
-			return { Heartbeat = heartbeat }
+			-- PostSimulation is Heartbeat's current name and the same signal; both are handed
+			-- the frame delta. Library code uses whichever name it was written against, and a
+			-- test steps one clock either way.
+			return { Heartbeat = heartbeat, PostSimulation = heartbeat, PreSimulation = heartbeat }
 		elseif name == "ReplicatedStorage" then
 			return rbx.ReplicatedStorage
 		elseif name == "GroupService" then
@@ -1241,6 +1317,37 @@ rbx.game = {
 			return { PromptTriggered = rbx.promptTriggered }
 		elseif name == "CollectionService" then
 			return {
+				-- The write side. Tests used to seed `tagged` directly; library code that tags
+				-- its own instances needs to go through the service like anything else.
+				AddTag = function(_, instance, tag)
+					local list = tagged[tag]
+					if not list then
+						list = {}
+						tagged[tag] = list
+					end
+					if not table.find(list, instance) then
+						table.insert(list, instance)
+						local added = tagAdded[tag]
+						if added then
+							added.fire(instance)
+						end
+					end
+				end,
+				RemoveTag = function(_, instance, tag)
+					local list = tagged[tag]
+					if not list then
+						return
+					end
+					local index = table.find(list, instance)
+					if index then
+						table.remove(list, index)
+						local _, removed = tagSignals(tag)
+						removed.fire(instance)
+					end
+				end,
+				HasTag = function(_, instance, tag)
+					return table.find(tagged[tag] or {}, instance) ~= nil
+				end,
 				GetTagged = function(_, tag)
 					tagGetCalls += 1
 					local out = {}

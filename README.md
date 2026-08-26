@@ -5,7 +5,7 @@ nothing outside its own folder except declared Wally packages.
 
 Two lineages live here:
 
-- **Extracted from CastleWars** (Zone, Nametags, Moveables, Heatmap, TimeSync, LagCompensation,
+- **Extracted from CastleWars** (Zone, Nametags, Heatmap, TimeSync, LagCompensation,
   Placement, Matchmaking) — game-specific coupling replaced with injected config /
   callbacks or self-provisioning; extracted read-only, source game unmodified. The extraction
   conventions below apply to these.
@@ -42,7 +42,6 @@ Two lineages live here:
 | **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it was extracted from disagreed about. Ships no copy. |
 | **Zone** | server | none | Subject-in-volume detection (rotated box / cylinder / sphere), enter/exit events. Watches named populations -- players by default, or bots/vehicles/anything with a position resolver -- with sets maintained by signal rather than polled. One shared Heartbeat for every zone, cached bounds with a broad-phase reject, and a cached HumanoidRootPart per player. |
 | **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
-| **Moveables** | server + client | none | Authored objects follow waypoint paths (ping-pong + stops) and carry riders standing on them. |
 | **Heatmap** | server | none | Anonymized player-movement voxel heatmap, RLE-compressed to a DataStore. Flushes on a timer as well as at shutdown, keeps the batch queued when a write fails instead of discarding it, and rotates its key so a value cannot grow past the 4MB limit. |
 | **TimeSync** | server + client | none | Per-player round-trip latency measurement (rolling average). Pairs with LagCompensation. An echo is only believed if it carries a value the server actually sent, and that value is consumed on use -- so a client cannot name its own latency, replay a ping, or flood the sample window. |
 | **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. |
@@ -58,6 +57,21 @@ Two lineages live here:
 Each library's `README.md` documents its public API and a complete usage example (plus, for the
 extracted packages, the configuration/injection points and the exact changes made during
 extraction).
+
+### Parked
+
+`Temp/` is gitignored and holds libraries kept locally rather than published, with their tests
+beside them. Nothing in it ships, and the suite in [`Tests/`](Tests) never references it — a
+published test that loads an unpublished library is a suite that fails on a fresh clone.
+
+- **Moveables** (server + client) — authored objects follow waypoint paths (ping-pong + stops)
+  and carry riders standing on them. Tested and correct (19 checks, `Temp/test-moveables.luau`),
+  parked pending a decision on whether it earns a slot. Two things to weigh if it comes back:
+  the client raycasts and rebuilds its `RaycastParams` every frame and walks *every* tagged
+  moveable rather than only the ridden one; and the path is **ping-pong only**, so a game
+  wanting a looping patrol has to fork it. The genuinely valuable part is the rider carry —
+  translating the character client-side, because it stays client-owned, so it rides without
+  rubber-banding.
 
 ## Tests
 

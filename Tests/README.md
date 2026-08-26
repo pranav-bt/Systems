@@ -35,7 +35,11 @@ lune run Tests/tests/test-timesync.luau          # latency, and who names it    
 lune run Tests/tests/test-heatmap.luau           # RLE + the flush failure path    24
 ```
 
-1303 checks at present, all passing. **Every realm of every library is covered** --
+1303 checks at present, all passing.
+
+Libraries parked under `Temp/` (gitignored) keep their tests beside them rather than here, and
+are run directly: `lune run Temp/test-moveables.luau`. A published test that loads an
+unpublished library is a suite that fails on a fresh clone. **Every realm of every library is covered** --
 server, client and shared -- because "tested" meaning only the server half is how a client
 typo survives a green run. Each file prints `N passed, M failed` and exits non-zero
 on failure.

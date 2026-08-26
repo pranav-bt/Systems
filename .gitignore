@@ -27,3 +27,8 @@ sourcemap.json
 Thumbs.db
 desktop.ini
 
+# ------------------------------------------------------------------- parked --
+# Libraries pulled out of the published set but kept locally, with their tests
+# beside them. Nothing in here ships; run one with:
+#   lune run Temp/test-<name>.luau
+Temp/
