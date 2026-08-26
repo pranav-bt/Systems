@@ -322,25 +322,83 @@ function Rewind.new(deps: Deps)
 	-- Static-world occlusion only: live characters/NPC rigs/cosmetics are excluded,
 	-- so this answers "does a wall sit between muzzle and impact". A hit closer than
 	-- LOS_IMPACT_SLACK to the claimed impact IS the surface the bolt struck.
-	function api.HasLineOfSight(from: Vector3, to: Vector3): boolean
-		local exclude: { Instance } = {}
+	--[[
+		The line-of-sight filter, REUSED rather than rebuilt.
+
+		This is the hottest path the module has -- one call per target per claim -- and it used
+		to iterate every player, build a fresh exclude table and allocate a new RaycastParams
+		on each of them. Across a full lobby that is a steady stream of garbage produced to
+		describe a world that had not changed.
+
+		Both parts are cached now. The params object is reused because RaycastParams is
+		mutable; the exclude list is rebuilt only when it can actually have changed, which is
+		when a player joins, leaves or respawns. `losParamsDirty` is the flag those signals
+		set, and it starts true so the first call always builds one.
+	]]
+	local losParams: RaycastParams? = nil
+	local losExclude: { Instance } = {}
+	local losParamsDirty = true
+
+	local function markLosDirty()
+		losParamsDirty = true
+	end
+
+	Players.PlayerAdded:Connect(function(player: Player)
+		markLosDirty()
+		-- A respawn swaps the Character out, so the cached list holds a destroyed one.
+		player.CharacterAdded:Connect(markLosDirty)
+		player.CharacterRemoving:Connect(markLosDirty)
+	end)
+	Players.PlayerRemoving:Connect(markLosDirty)
+	for _, player in Players:GetPlayers() do
+		player.CharacterAdded:Connect(markLosDirty)
+		player.CharacterRemoving:Connect(markLosDirty)
+	end
+
+	local function losRaycastParams(): RaycastParams
+		local params = losParams
+		if not params then
+			params = RaycastParams.new()
+			;(params :: RaycastParams).FilterType = Enum.RaycastFilterType.Exclude
+			;(params :: RaycastParams).RespectCanCollide = true
+			losParams = params
+		end
+		if not losParamsDirty then
+			return params :: RaycastParams
+		end
+		losParamsDirty = false
+
+		table.clear(losExclude)
 		for _, player in Players:GetPlayers() do
 			if player.Character then
-				table.insert(exclude, player.Character)
+				table.insert(losExclude, player.Character)
 			end
 		end
 		for _, name in Config.losExcludeFolderNames do
 			local folder = workspace:FindFirstChild(name)
 			if folder then
-				table.insert(exclude, folder)
+				table.insert(losExclude, folder)
 			end
 		end
+		--[[
+			Reassigned rather than mutated in place. FilterDescendantsInstances hands back a
+			COPY on read and takes a copy on write, so mutating what you read changes nothing
+			-- the assignment is what actually updates the filter.
+		]]
+		;(params :: RaycastParams).FilterDescendantsInstances = losExclude
+		return params :: RaycastParams
+	end
 
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.FilterDescendantsInstances = exclude
-		params.RespectCanCollide = true
+	--[[
+		Exposed so a host that moves the excluded set itself -- streaming a folder in, spawning
+		an NPC into one -- can say so. Cheap: it only sets a flag.
+	]]
+	function api.InvalidateLineOfSightFilter()
+		markLosDirty()
+	end
 
+	function api.HasLineOfSight(from: Vector3, to: Vector3): boolean
+		local params = losRaycastParams()
 		local result = workspace:Raycast(from, to - from, params)
 		if not result then
 			return true

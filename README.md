@@ -44,7 +44,7 @@ Two lineages live here:
 | **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
 | **Heatmap** | server | none | Anonymized player-movement voxel heatmap, RLE-compressed to a DataStore. Flushes on a timer as well as at shutdown, keeps the batch queued when a write fails instead of discarding it, and rotates its key so a value cannot grow past the 4MB limit. |
 | **TimeSync** | server + client | none | Per-player round-trip latency measurement (rolling average). Pairs with LagCompensation. An echo is only believed if it carries a value the server actually sent, and that value is consumed on use -- so a client cannot name its own latency, replay a ping, or flood the sample window. |
-| **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. |
+| **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. Pose history in a ring buffer on the engine-synced clock, interpolated between samples; claims bounded in both directions (stale beyond `MAX_REWIND`, ahead beyond `FUTURE_SLACK`) and capped by a per-key token bucket. The line-of-sight filter is cached and invalidated on join/leave/respawn rather than rebuilt per raycast; hitbox extents are cached on first sight with `RefreshExtents(character, size?)` for a character that genuinely changes shape. |
 | **Placement** | server + client + shared | `nezuo/spark` | Free-form structure placement: grid-snapped preview ghost + server validation. |
 | **Matchmaking** | server | `evaera/promise` | Cross-server, region-shardable MemoryStore matchmaking with leader election + teleport hand-off. |
 | **ObjectPool** | any | none | Instance reuse. One pool per template (an object, not a singleton keyed by string), with the release strategy injected -- unparent, park out of sight for particles whose warm-up must survive, or disable in place. Explicit cap policy (grow / steal-oldest / nil), warm-up, and a `release` that no-ops on a foreign or double release rather than crashing. |
@@ -101,6 +101,15 @@ copies that multi-file packages still need.
   groups. Ships a `default.project.json` because it spans client/server/shared. Carries a few
   documented known port-bugs (delete-path `table.remove` misuse, a `calculateOffsetFromCollider`
   stub) flagged but not silently altered — see its README "Known issues".
+- **LagCompensation** — `RefreshExtents(character, size?)` re-reads a character's hitbox size.
+  Extents are cached on first sight because `GetExtentsSize` walks the whole model, and doing
+  that 20×/second per character to answer a question that almost never changes is pure waste —
+  but a character that *does* change shape (R6↔R15, a size powerup, a vehicle seat) would
+  otherwise keep the box it had when first recorded, and every later hit would be validated
+  against the wrong volume. It is explicit rather than automatic because there is no reliable
+  signal to watch: extents move from a scale, a limb swap, an accessory or a humanoid
+  description, and which of those counts as "a different size now" is a game's judgement.
+  Pass `size` when the caller already knows it and the model walk is skipped entirely.
 - **Matchmaking** — inject `resolveTargetPlaceId()` and `keyPrefix`; wire your own remotes to
   `joinQueue` / `exitQueue` and push status via the `onStatus` callback (or pull `getStatus`).
   Region sharding ships disabled (single shard) exactly as in the original.

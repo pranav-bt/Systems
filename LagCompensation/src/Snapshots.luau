@@ -217,6 +217,33 @@ function Snapshots.new(deps: Deps)
 		return (characterRecord and characterRecord.extents) or DEFAULT_EXTENTS
 	end
 
+	--[[
+		Re-reads a character's hitbox size. Returns whether it was tracked.
+
+		EXTENTS ARE CACHED ON FIRST SIGHT, because GetExtentsSize walks the whole model and
+		doing that twenty times a second per character, to answer a question that almost never
+		changes, is pure waste. The cost of caching is that a character which DOES change shape
+		keeps the size it had when it was first recorded -- an R6/R15 swap, a size powerup, a
+		vehicle seat -- and every later hit is then validated against the wrong volume, in
+		whichever direction the change went.
+
+		There is no reliable signal to watch for that. A model's extents can change from a
+		scale, a limb swap, an accessory, or a humanoid description, and which of those counts
+		as "the character is a different size now" is a game's judgement rather than this
+		module's. So it is an explicit call, made by whoever changed the size.
+
+		Pass `size` when the caller already knows it -- a host scaling a rig by a known factor
+		has the answer and can skip the walk entirely.
+	]]
+	function api.RefreshExtents(character: Model, size: Vector3?): boolean
+		local characterRecord = records[character]
+		if not characterRecord then
+			return false
+		end
+		characterRecord.extents = size or character:GetExtentsSize()
+		return true
+	end
+
 	-- Wipe history across an authorized discontinuity (spawn-point teleport): the
 	-- next sample has no predecessor, so the jump can neither flag nor be rewound
 	-- through.

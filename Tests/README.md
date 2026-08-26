@@ -33,9 +33,11 @@ lune run Tests/tests/test-objectpool.luau        # instance reuse + cap policy  
 lune run Tests/tests/test-zone-query.luau        # stateless geometry queries      44
 lune run Tests/tests/test-timesync.luau          # latency, and who names it       26
 lune run Tests/tests/test-heatmap.luau           # RLE + the flush failure path    24
+lune run Tests/tests/test-lagcomp-snapshots.luau # the pose ring buffer            46
+lune run Tests/tests/test-lagcomp-rewind.luau    # claim gates + LOS filter        49
 ```
 
-1303 checks at present, all passing.
+1398 checks at present, all passing.
 
 Libraries parked under `Temp/` (gitignored) keep their tests beside them rather than here, and
 are run directly: `lune run Temp/test-moveables.luau`. A published test that loads an

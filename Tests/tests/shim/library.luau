@@ -47,6 +47,7 @@ local ENVIRONMENT = {
 	Vector3 = rbx.Vector3,
 	CFrame = rbx.CFrame,
 	Color3 = rbx.Color3,
+	RaycastParams = rbx.RaycastParams,
 	workspace = rbx.workspace,
 	time = rbx.time,
 	typeof = rbx.typeof,

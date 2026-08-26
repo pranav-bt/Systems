@@ -102,6 +102,7 @@ function LagCompensation.new(config: Config?)
 		SampleAt = snapshots.SampleAt,
 		SamplesInWindow = snapshots.SamplesInWindow,
 		GetExtents = snapshots.GetExtents,
+		RefreshExtents = snapshots.RefreshExtents,
 		Reset = snapshots.Reset,
 		NoteAuthorizedBurst = snapshots.NoteAuthorizedBurst,
 		IsClaimRejected = snapshots.IsClaimRejected,

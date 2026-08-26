@@ -256,6 +256,12 @@ rbx.Color3 = {
 -- -------------------------------------------------------------------- Enum --
 
 rbx.Enum = {
+	-- Filter modes are compared by identity in library code, so these only have to be stable
+	-- distinct values rather than the engine's own numbers.
+	RaycastFilterType = {
+		Exclude = "Exclude",
+		Include = "Include",
+	},
 	AnimationPriority = {
 		Core = "Core",
 		Idle = "Idle",
@@ -707,6 +713,12 @@ local function newContainer(className)
 	if className == "Model" then
 		container.PrimaryPart = nil
 		container._scale = 1
+		-- Settable, because the whole point of one test here is what happens when a character
+		-- changes size after its extents were first read.
+		container._extents = v3(4, 5.2, 4)
+		function container.GetExtentsSize(self)
+			return rawget(self, "_extents")
+		end
 		function container.ScaleTo(self, scale)
 			self._scale = scale
 		end
@@ -1023,13 +1035,104 @@ rbx.Instance = {
 	end,
 }
 
+-- Counted, because "how many of these does a hot path allocate per frame" is a finding in its
+-- own right and invisible without a tally.
+local raycastParamsMade = 0
+
+function rbx.raycastParamsMade()
+	return raycastParamsMade
+end
+
+function rbx.resetRaycastParamsCount()
+	raycastParamsMade = 0
+end
+
+rbx.RaycastParams = {
+	new = function()
+		raycastParamsMade += 1
+		return {
+			FilterType = nil,
+			FilterDescendantsInstances = {},
+			IgnoreWater = false,
+			RespectCanCollide = false,
+		}
+	end,
+}
+
 -- A real container: libraries provision folders into Workspace and then look for them.
+--[[
+	`workspace:GetServerTimeNow()`, the engine-synced clock lag compensation stamps its history
+	on.
+
+	Settable, and deliberately NOT tied to the heartbeat: rewind logic is entirely about "where
+	was this at time t", so a test needs to place samples at exact times and then ask about
+	instants between them. Sampling a real clock would make every interpolation assertion a
+	tolerance instead of an equality.
+]]
+-- Everything handed to Debris:AddItem, oldest first.
+local debrisItems = {}
+
+function rbx.debrisItems()
+	return debrisItems
+end
+
+local serverTime = 0
+
+--[[
+	What `workspace:Raycast` answers. nil -- the default -- means the ray hit nothing, which is
+	an unobstructed line of sight.
+
+	A function rather than a fixed value so a test can answer differently per ray: the
+	interesting line-of-sight cases are "this one is blocked and that one is not".
+]]
+local raycastAnswer: (any, any, any) -> any = function()
+	return nil
+end
+
+function rbx.setRaycastResult(fn)
+	raycastAnswer = fn or function()
+		return nil
+	end
+end
+
+function rbx.setServerTime(value)
+	serverTime = value
+end
+
+function rbx.advanceServerTime(delta)
+	serverTime += delta
+end
+
+function rbx.serverTime()
+	return serverTime
+end
+
 rbx.workspace = newContainer("Folder")
 rbx.workspace.Name = "Workspace"
+-- The engine-synced clock. See rbx.setServerTime / rbx.advanceServerTime.
+function rbx.workspace.GetServerTimeNow()
+	return serverTime
+end
+-- Raycasts default to hitting nothing. rbx.setRaycastResult replaces the answer for the
+-- library under test; a nil result is "the ray reached the end", which is what an unobstructed
+-- line of sight looks like.
+function rbx.workspace.Raycast(_, origin, direction, params)
+	return raycastAnswer(origin, direction, params)
+end
 
 -- --------------------------------------------------------------- services --
 
 local playerList = {}
+local playerListReads = 0
+
+function rbx.playerListReads()
+	return playerListReads
+end
+
+function rbx.resetPlayerListReads()
+	playerListReads = 0
+end
+
 local nextUserId = 0
 -- Stands in for the Players service as a parent, so `player.Parent` is truthy while a
 -- player is here and nil once they are not.
@@ -1178,6 +1281,9 @@ rbx.game = {
 		if name == "Players" then
 			return setmetatable({
 				GetPlayers = function()
+					-- Counted: "how often does this hot path re-read the roster" is exactly the
+					-- question a cached filter is answering, and it is invisible without a tally.
+					playerListReads += 1
 					local out = {}
 					for _, player in playerList do
 						table.insert(out, player)
@@ -1271,6 +1377,14 @@ rbx.game = {
 				end,
 				JSONEncode = function(_, value)
 					return tostring(value)
+				end,
+			}
+		elseif name == "Debris" then
+			-- Debris:AddItem is fire-and-forget cleanup. Recorded rather than timed: what a
+			-- test cares about is that something was handed over to be reaped, not when.
+			return {
+				AddItem = function(_, instance, lifetime)
+					table.insert(debrisItems, { instance = instance, lifetime = lifetime })
 				end,
 			}
 		elseif name == "PathfindingService" then
