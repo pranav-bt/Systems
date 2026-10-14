@@ -4,7 +4,7 @@ Notes for Claude Code (and anyone using AI) in the libraries repo.
 
 **Conventions live in [CONVENTIONS.md](CONVENTIONS.md)** — packaging rules, per-library
 notes, the Lune test suites in [Tests/](Tests), and which packages are formatted
-with stylua/selene (the AI suite is; the packages rebuilt from CastleWars deliberately are
+with stylua/selene (the AI suite is; the packages rebuilt from game systems deliberately are
 not). Read it first; this file only covers what it does not.
 
 ---

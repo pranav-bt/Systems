@@ -15,8 +15,7 @@
 -- CHARGE FIRST, THEN MOVE, and the order is deliberate. Every reason the move could
 -- fail is checked before a coin is taken, so the move that follows cannot legitimately
 -- refuse -- but if it somehow does, the player has paid and not received, which is
--- fixable by hand. The other order risks a free level, which cannot be taken back. Same
--- reasoning as CommunityReward's flag-before-grant.
+-- fixable by hand. The other order risks a free level, which cannot be taken back.
 
 local CompanionsUpgrades = {}
 

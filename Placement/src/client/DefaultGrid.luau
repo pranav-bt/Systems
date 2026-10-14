@@ -1,6 +1,6 @@
 -- Default uniform voxel grid used when the host does not inject its own grid.
 --
--- Replaces the CastleWars `ReplicatedStorage.Shared.Map` dependency. The
+-- Replaces the game's `ReplicatedStorage.Shared.Map` dependency. The
 -- placement system only ever calls `grid.positionToCoord(pos)` and reads
 -- `grid.voxelSize`, so that is all this provides. Coordinates are integer
 -- Vector3s derived by flooring `(position - origin) / voxelSize` per axis.

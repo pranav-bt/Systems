@@ -9,24 +9,18 @@ no Rojo, no place file:
 lune run Tests/tests/test-zone.luau           # geometry, ticker, lifecycle      89
 lune run Tests/tests/test-zone-types.luau     # subject-type registry           91
 lune run Tests/tests/test-zone-signals.luau   # event identity and isolation    30
-lune run Tests/tests/test-community-reward.luau  # claim flow, once and only once  51
-lune run Tests/tests/test-community-reward-client.luau # its client transport      18
 lune run Tests/tests/test-companions-loadout.luau # the record layer, pure        103
 lune run Tests/tests/test-companions.luau        # public API, persistence, hooks  75
 lune run Tests/tests/test-companions-addons.luau # merge and pay-to-level          66
 lune run Tests/tests/test-companions-rig.luau    # follow modes and animation      54
 lune run Tests/tests/test-companions-ticker.luau # per-pet tick scheduling         26
+lune run Tests/tests/test-companions-ground.luau # ground follow at runtime        21
 lune run Tests/tests/test-trading.luau           # trade sessions, offers, swaps   72
 lune run Tests/tests/test-trading-lines.luau     # the default line shape          23
 lune run Tests/tests/test-trading-client.luau    # its client transport            22
 lune run Tests/tests/test-mech.luau           # AI suite: Mech archetype        18
 lune run Tests/tests/test-castle.luau         # AI suite: Castle archetype      19
 lune run Tests/tests/test-bnb.luau            # AI suite: BnB archetype         21
-lune run Tests/tests/test-levelling-curve.luau   # the XP curve, pure              57
-lune run Tests/tests/test-levelling.luau         # the grant door + tempo          84
-lune run Tests/tests/test-levelling-client.luau  # its client mirror               35
-lune run Tests/tests/test-rebirth.luau           # the ladder + the trade          81
-lune run Tests/tests/test-rebirth-client.luau    # its client state                35
 lune run Tests/tests/test-bots-blackboard.luau   # sensors + invalidate            30
 lune run Tests/tests/test-pathfinding-costs.luau # what PathAgent asks CreatePath  22
 lune run Tests/tests/test-pathfinding-broker.luau # one answer per request; drift  37
@@ -37,10 +31,9 @@ lune run Tests/tests/test-heatmap.luau           # RLE + the flush failure path 
 lune run Tests/tests/test-lagcomp-snapshots.luau # the pose ring buffer            46
 lune run Tests/tests/test-lagcomp-rewind.luau    # claim gates + LOS filter        49
 lune run Tests/tests/test-lagcomp-facade.luau    # the public table, LOS invalidate 24
-lune run Tests/tests/test-nametags.luau          # overhead labels + colour paths   26
 ```
 
-1485 checks at present, all passing.
+1097 checks at present, all passing.
 
 Libraries parked under `Temp/` (gitignored) keep their tests beside them rather than here, and
 are run directly: `lune run Temp/test-moveables.luau`. A published test that loads an
@@ -82,7 +75,7 @@ runs everything it asks for is already in the table. It also resolves a sibling 
 (`script.Parent.shared` from `src/server/init.luau`) on demand, so testing the server half
 never drags in the client half.
 
-Call it as `("Levelling", "server")` for a realm, `("Pathfinding", "PathAgent")` for one module,
+Call it as `("Trading", "server")` for a realm, `("Pathfinding", "PathAgent")` for one module,
 or `("Bots")` for a package entry point.
 
 **Do not reintroduce vendored copies.** Multi-file packages used to be duplicated under

@@ -39,7 +39,7 @@ None beyond Roblox services. The module uses only `DataStoreService`,
 Call `Heatmap.configure(overrides)` once **before** `Heatmap.init()` to override
 any of the fields below. It shallow-merges `overrides` into the internal
 `CONFIG`, leaving unspecified fields at their defaults, so calling nothing keeps
-the original CastleWars behavior. `CELL_SIZE`, `ORIGIN`, `SAMPLE_INTERVAL`, and
+the original in-game behavior. `CELL_SIZE`, `ORIGIN`, `SAMPLE_INTERVAL`, and
 `MAX_JOURNEY_SAMPLES` are read live (they also take effect if changed after
 `init()`); changing `DATASTORE_NAME` re-resolves the DataStore on the next flush.
 
@@ -118,7 +118,7 @@ local Heatmap = require(ServerStorage.Libraries.Heatmap)
 
 -- Optional: override defaults before init().
 Heatmap.configure({
-    DATASTORE_NAME = "CastleWarsHeatmap_v1",
+    DATASTORE_NAME = "MyGameHeatmap_v1",
     CELL_SIZE = 8,
     ORIGIN = workspace.Map.RedBase.Position, -- anchor cells to the map
 })
@@ -133,7 +133,7 @@ Heatmap.setMeta(player, "mapName", "Skybridge")
 
 ## From game system to package
 
-Started as `src/ServerStorage/Libraries/Analytics/LobbyHeatmap.lua` in CastleWars.
+Started as an in-game analytics module, `LobbyHeatmap.lua`.
 
 - **Renamed** the public identity from `LobbyHeatmap` to `Heatmap` (module table,
   header title, and the `[LobbyHeatmap]` log prefixes → `[Heatmap]`). The
@@ -157,4 +157,4 @@ Started as `src/ServerStorage/Libraries/Analytics/LobbyHeatmap.lua` in CastleWar
   example now uses `setMeta(player, "funnelPath", ...)`, which is the actual API.
   No functions were added or removed.
 - No project-specific requires existed, so none were injected or inlined — the
-  module was already free of CastleWars dependencies.
+  module was already free of game dependencies.

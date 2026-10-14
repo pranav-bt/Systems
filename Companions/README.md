@@ -325,23 +325,23 @@ can be installed together without fighting over who writes the level.
 
 ## From game system to package
 
-Started as the CA game's `PetService`, which was already written as a drop-in package — its own
+Started as a game's `PetService`, which was already written as a drop-in package — its own
 header declared the contract and every require in it was relative. The core moved almost as-is;
 what changed was everything around it.
 
-1. **The in-run levelling subsystem is gone** — 507 lines. CA had *two* ladders: a per-run star
+1. **The in-run levelling subsystem is gone** — 507 lines. The game had *two* ladders: a per-run star
    rank fed by reinforcement cards, which auto-merged three-of-a-kind **on the field**, and a
    permanent one from merging owned duplicates. Only the permanent one is a companion system's
    business, so `upgrade`, `getStack`, `getStackLevels`, `levelUp`, `levelUpAll`, the whole
    leader/follower stack machinery and `stackSize`/`stackOffset`/`stackCentreBand` all stayed
-   behind. CA's own code carried a warning comment about the two levels being different things;
+   behind. The game's own code carried a warning comment about the two levels being different things;
    with one level there is nothing to warn about.
-2. **The loadout is slot-keyed.** CA keyed it by pet id and expressed multiples through the stack
+2. **The loadout is slot-keyed.** The game keyed it by pet id and expressed multiples through the stack
    mechanism, so removing stacks would have meant owning five Knights and fielding exactly one.
-3. **Ownership moved in.** CA's loadout server wrote the game's profile directly; the record and
+3. **Ownership moved in.** The game's loadout server wrote its profile directly; the record and
    its persistence adapter are the package's now, so the addons have one place to write.
 4. **`maxEquipped` is gone**, replaced by the slot declaration — see above.
-5. **Prices left behind.** CA's slot config carried gold costs and developer-product ids. Only the
+5. **Prices left behind.** The game's slot config carried gold costs and developer-product ids. Only the
    mechanism came across.
 6. **`ownedAttachment` is kept but unwritten.** `spawnFollower` was its only producer. It is the
    anchor a pet needs when it is *not* hanging off a character slot — a ground-walking or detached

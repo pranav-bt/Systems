@@ -62,9 +62,9 @@ rung is within the companion's ladder, it is for sale, they can afford it — so
 follows cannot legitimately refuse.
 
 If it somehow does, the player has **paid and not received**, which is fixable by hand. The other
-order risks a **free level**, which cannot be taken back. Same reasoning as `CommunityReward`'s
-flag-before-grant, and when it happens the warning names the player, the amount and the rung so
-it can be found in a log rather than inferred from a complaint.
+order risks a **free level**, which cannot be taken back. When it does happen, the warning names
+the player, the amount and the rung so it can be found in a log rather than inferred from a
+complaint.
 
 `charge` is a separate seam from `balance` precisely so a host can refuse at the last moment — a
 receipt that failed, a rate limit, another server having spent the same gold — and returning

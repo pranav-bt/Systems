@@ -297,7 +297,7 @@ function Placement3D.trySnapToNearby(model: Model, itemDef, hitPoint, surfaceNor
 	}
 end
 
--- Known stub: always returns 0 (the CastleWars original never wired up a
+-- Known stub: always returns 0 (the original in-game version never wired up a
 -- per-collider offset). Preview offset comes entirely from the caller-provided
 -- `offset`/`itemBase`. Kept as-is; see README "Known issues".
 function Placement3D.calculateOffsetFromCollider(model: Model, normal: Vector3): number

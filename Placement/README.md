@@ -32,7 +32,7 @@ src/
   client/
     init.luau            -- entry point; ClientPlacement.init(config)
     Context.luau         -- injection context (grid / modelsSource / scheduler)
-    DefaultGrid.luau     -- default uniform voxel grid (replaces CastleWars Map)
+    DefaultGrid.luau     -- default uniform voxel grid (replaces the game's Map module)
     DefaultScheduler.luau-- default self-contained RunService scheduler
     PlacementInput.luau  -- Spark Actions + bindings
     PreviewManager.lua   -- ghost lifecycle, raycast, place/delete driving
@@ -100,7 +100,7 @@ collision groups).
 
 The client only ever calls `grid.positionToCoord(pos)` and reads `grid.voxelSize`.
 `positionToCoord` is a **dot** function (not a method), so a host can inject a plain
-module such as CastleWars' `Map`:
+module such as a game's own `Map`:
 
 ```lua
 type Grid = {
@@ -148,7 +148,7 @@ type Scheduler = {
 
 Two phases are used: `"Input"` (poll input each frame) and `"PostSimulation"`
 (update the preview). `DefaultScheduler` maps them to `RunService.PreRender` and
-`RunService.Heartbeat` respectively — matching the original CastleWars
+`RunService.Heartbeat` respectively — matching the original in-game
 `ClientScheduler` wiring — so no external scheduler is needed. Inject your own to
 integrate with a host frame loop.
 

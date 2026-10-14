@@ -7,8 +7,8 @@ nothing outside its own folder except declared Wally packages.
 
 Two lineages live here:
 
-- **Rebuilt from CastleWars game systems** (Zone, Nametags, Heatmap, TimeSync, LagCompensation,
-  Placement) — turned into standalone packages by replacing game-specific coupling with injected
+- **Rebuilt from in-game systems** (Zone, Heatmap, TimeSync, LagCompensation, Placement) —
+  turned into standalone packages by replacing game-specific coupling with injected
   config / callbacks or self-provisioning, without modifying the game itself. The packaging
   conventions below apply to these.
 - **The AI suite, designed as packages from scratch** (Bots, Pathfinding, Perception, TacticalQuery, HTN) — five
@@ -19,7 +19,7 @@ Two lineages live here:
   whose header comment is the spec** — and each README's "Reading the source" note names that
   core module.
 
-## Packaging conventions (CastleWars packages)
+## Packaging conventions (packages rebuilt from game systems)
 
 - **Injection over globals** — anything a library used to reach for (schedulers, loggers, latency,
   place IDs, voxel grids, catalogs) is now a config field with a sensible default, so each library
@@ -39,11 +39,7 @@ Two lineages live here:
 | **CompanionsMerge** | server | none | Opt-in addon over Companions: duplicates merge into stronger copies at N! pulls a level (2 x lvl1 -> lvl2, 6 x lvl5 -> lvl6). Owns no level and no stats -- a policy over the base's `moveCopies`. |
 | **CompanionsUpgrades** | server | none | Opt-in addon over Companions: pay to raise a level. Currency injected, charge-before-move, installable alongside CompanionsMerge without the two fighting over the level. |
 | **Trading** | server + client + shared | none | Player-to-player trading: the invite/offer/ready/countdown session, with what may be swapped and the swap itself injected. Any offer change clears both agreements; lines are totalled by key so duplicates cannot slip past a per-line check; the swap is one atomic call that must re-validate. |
-| **Levelling** | server + client + shared | none | A permanent player level earned through ONE door. Every XP source hands over a BASE amount; a named multiplier stack (gamepass x rebirth x event, composed by product) is applied here and nowhere else, to the amount and to the per-second tempo alike. Profile storage injected, level/experience published as Player attributes, and a client half that coalesces the two writes into one honest change. No stat table -- what a level is worth is a number the host reads. |
-| **LevellingRebirth** | server + client + shared | none | Opt-in addon over Levelling: trade the level you have for a permanently faster one. The ladder is one table and validated on install; the request carries NOTHING, so a forged call is indistinguishable from a real one; the host's own state refuses through a gate. Composes with the base by shape, and pays in an XP multiplier plus an opaque rewards payload. |
-| **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it started in disagreed about. Ships no copy. |
 | **Zone** | server | none | Subject-in-volume detection (rotated box / cylinder / sphere), enter/exit events. Watches named populations -- players by default, or bots/vehicles/anything with a position resolver -- with sets maintained by signal rather than polled. One shared Heartbeat for every zone, cached bounds with a broad-phase reject, and a cached HumanoidRootPart per player. |
-| **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
 | **Heatmap** | server | none | Anonymized player-movement voxel heatmap, RLE-compressed to a DataStore. Flushes on a timer as well as at shutdown, keeps the batch queued when a write fails instead of discarding it, and rotates its key so a value cannot grow past the 4MB limit. |
 | **TimeSync** | server + client | none | Per-player round-trip latency measurement (rolling average). Pairs with LagCompensation. An echo is only believed if it carries a value the server actually sent, and that value is consumed on use -- so a client cannot name its own latency, replay a ping, or flood the sample window. |
 | **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. Pose history in a ring buffer on the engine-synced clock, interpolated between samples; claims bounded in both directions (stale beyond `MAX_REWIND`, ahead beyond `FUTURE_SLACK`) and capped by a per-key token bucket. The line-of-sight filter is cached and invalidated on join/leave/respawn rather than rebuilt per raycast; hitbox extents are cached on first sight with `RefreshExtents(character, size?)` for a character that genuinely changes shape. |
@@ -101,7 +97,7 @@ there.** Everything runs under Lune from this directory — no Studio, no Rojo, 
 lune run Tests/tests/test-zone.luau
 ```
 
-1485 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for how
+1097 checks at present. See [`Tests/README.md`](Tests/README.md) for the full list, and for how
 the loader runs each library's real source (vendored test copies are gone and must not return).
 
 ## Notes per library

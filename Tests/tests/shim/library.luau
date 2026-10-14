@@ -199,7 +199,7 @@ end
 
 	  library("Zone")                      -> Zone/src/init.luau
 	  library("Companions", "Loadout")     -> Companions/src/Loadout.luau
-	  library("CommunityReward", "server") -> CommunityReward/src/server/init.luau
+	  library("Trading", "server")         -> Trading/src/server/init.luau
 ]]
 return function(name: string, part: string?): any
 	local dir, module = `{name}/src`, "init"

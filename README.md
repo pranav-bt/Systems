@@ -2,28 +2,26 @@
 
 **Gameplay and AI systems for Roblox that I design, build and test. Written in Luau.**
 
-Twenty standalone packages: a complete NPC AI suite, server-authoritative hit validation,
-cheat-resistant latency measurement, progression, trading, pets and spatial queries. Each one
+Sixteen standalone packages: a complete NPC AI suite, server-authoritative hit validation,
+cheat-resistant latency measurement, player trading, a pet system and spatial queries. Each one
 drops into a game on its own, takes its game-specific pieces through configuration instead of
-reaching for globals, and keeps its logic testable outside Studio. I back them with **1,485
+reaching for globals, and keeps its logic testable outside Studio. I back them with **1,097
 headless checks** that run under [Lune](https://lune-org.github.io/docs) with no Studio, no
 Rojo and no place file.
 
-These systems are built for real games, not demos. Some began inside shipped games. I then
-redesigned them into standalone packages, fixing exploits and closing gaps along the way.
-Others, including the whole AI suite, I designed as packages from day one. The games I'm
-building now run on them.
+These systems are built for real games, not demos: the games I'm building now run on them.
+Along the way I've closed exploits and filled gaps, and I pin fixes down with regression tests.
 
 ![Luau](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Roblox](https://img.shields.io/badge/platform-Roblox-000000)
-![Checks](https://img.shields.io/badge/checks-1485%20passing-2ea44f)
+![Checks](https://img.shields.io/badge/checks-1097%20passing-2ea44f)
 ![Dependencies](https://img.shields.io/badge/cross--package%20requires-0-informational)
 
 | | |
 |---|---|
-| **Packages** | 20, none of which requires another |
-| **Library code** | ~19,500 lines of Luau |
-| **Tests** | 1,485 checks across 33 Lune suites (~13,500 lines including scenario policies) |
+| **Packages** | 16, none of which requires another |
+| **Library code** | ~17,000 lines of Luau |
+| **Tests** | 1,097 checks across 25 Lune suites (~11,000 lines including scenario policies) |
 | **External dependencies** | One Wally package (`nezuo/spark`, used by Placement). Everything else depends on nothing. |
 
 ---
@@ -64,10 +62,9 @@ flowchart LR
 - **HTN** is a SHOP-style planner with backtracking, a decomposition trace, a bounded search
   and replanning that doesn't penalise a plan for adapting.
 
-**Proving the design:** to test whether the suite could carry real games, I rebuilt the bot AI
-of three shipped titles (BuildAndBattle, CastleWars and MechBattlegrounds) on top of it. All
-three worked with **zero library changes**, and 58 headless scenario checks verify them. See
-[Tests/REPORT.md](Tests/REPORT.md).
+**Proving the design:** to test whether the suite could carry real games, I implemented three
+complete bot AIs, each from a different genre, on top of it. All three worked with **zero
+library changes**, and 58 headless scenario checks verify them.
 
 ### Server-authoritative hit validation
 
@@ -85,19 +82,18 @@ both the client claimed and the server verified.
   only if it carries a value the server sent, and each value works once. A client can't name
   its own latency, replay a ping or flood the sample window.
 
-### Economy and progression that resist forged requests
+### A player economy built to resist exploits
 
 - **Trading:** any change to an offer clears both players' agreement. Lines are totalled by
   item, so a duplicate can't slip past a per-line check. The swap is one atomic call that
-  re-validates before it moves anything. I also closed a hole in the in-game version this
-  started as: an offer padded with hidden keys got past a 2-line cap and had 51 lines
-  processed. A regression test now covers it.
-- **Levelling:** every XP source goes through one function. Multipliers (gamepass × rebirth ×
-  event) are applied there and nowhere else, to both the XP amount and the XP-per-second rate.
-- **LevellingRebirth:** a rebirth request carries no data, so a forged call looks exactly like
-  a real one and gains nothing.
+  re-validates before it moves anything. I also found and closed a hole where an offer padded
+  with hidden keys got past a 2-line cap and had 51 lines processed. A regression test now
+  covers it.
 - **Companions** handles a pet collection, loadout and rigs. Two opt-in addons, Merge and
   Upgrades, can both raise a pet's level and install side by side without conflicting.
+  Upgrades checks everything before it charges and charges before it moves anything. If the
+  move still fails, the player is owed a level that can be fixed by hand. It can never hand
+  out a free level that can't be taken back.
 
 ### World and infrastructure
 
@@ -135,7 +131,7 @@ notes.
 | [TimeSync](TimeSync) | server + client | Per-player round-trip latency the client can't forge; feeds LagCompensation |
 | [Units](Units/unit-system) | server + client + shared | One `Unit` type for players and bots: roster, ID resolution, ownership-safe teleport |
 
-**Progression and economy**
+**Pets and economy**
 
 | Package | Realm | What it does |
 |---|---|---|
@@ -143,9 +139,6 @@ notes.
 | [CompanionsMerge](CompanionsMerge) | server | Addon: merge duplicates into a higher level |
 | [CompanionsUpgrades](CompanionsUpgrades) | server | Addon: pay to raise a level, with the currency supplied by the game |
 | [Trading](Trading) | server + client + shared | Player-to-player trade sessions with an atomic, re-validated swap |
-| [Levelling](Levelling) | server + client + shared | Permanent player level, one entry point for XP, a multiplier stack |
-| [LevellingRebirth](LevellingRebirth) | server + client + shared | Addon: trade your level for a permanently faster one |
-| [CommunityReward](CommunityReward) | server + client | Verify Roblox group membership, then pay the reward exactly once |
 
 **World and infrastructure**
 
@@ -155,7 +148,6 @@ notes.
 | [ObjectPool](ObjectPool) | any | Instance reuse with configurable release behaviour, an explicit cap policy and warm-up |
 | [Placement](Placement) | server + client + shared | Grid-snapped building placement with a preview ghost and server validation |
 | [Heatmap](Heatmap) | server | Anonymous player-movement heatmap, compressed and saved to a DataStore |
-| [Nametags](Nametags) | server | Team-coloured overhead nametags with a health bar |
 
 ---
 
@@ -167,7 +159,7 @@ notes.
 - **Own your transport.** Networked packages create their own RemoteEvents instead of
   assuming a central registry exists at boot.
 - **Never trust the client.** The server re-derives every claim: hits are rewound and
-  re-tested, pings must echo a server-issued value, and trades and rebirths re-validate.
+  re-tested, pings must echo a server-issued value, and trades re-validate before anything moves.
 - **Degrade under load instead of spiking.** The bot scheduler, raycast budget, path broker
   and query probes all work within a budget. When it runs out, they slow down or decline to
   answer rather than drop frames or guess.
@@ -209,17 +201,15 @@ for f in Tests/tests/test-*.luau; do lune run "$f" | tail -n 1; done
 | Area | Checks |
 |---|---|
 | Companions, Merge and Upgrades | 345 |
-| Levelling and LevellingRebirth | 293 |
 | Zone | 254 |
 | LagCompensation | 119 |
 | Trading | 117 |
-| CommunityReward | 69 |
 | ObjectPool | 65 |
 | Pathfinding | 59 |
-| AI scenarios (Bots: Mech, Castle, BnB) | 58 |
+| AI scenarios (three complete bot AIs on Bots) | 58 |
 | Bots blackboard | 30 |
-| TimeSync · Nametags · Heatmap | 26 · 26 · 24 |
-| **Total** | **1,485** |
+| TimeSync · Heatmap | 26 · 24 |
+| **Total** | **1,097** |
 
 Perception, TacticalQuery, HTN, Placement and Units don't have dedicated suites yet.
 
@@ -234,8 +224,7 @@ Perception, TacticalQuery, HTN, Placement and Units don't have dedicated suites 
 Units/unit-system/ shared/ server/ client/ modules (a drop-in, see its README)
 Tests/
   tests/           one Lune suite per library concern, the harness and the Roblox shim
-  src/             scenario policies: three shipped games' bots rebuilt on the AI suite
-  REPORT.md        the feasibility study
+  src/             scenario policies: three complete bot AIs built on the AI suite
 CONVENTIONS.md     design conventions and per-library maintainer notes
 ```
 

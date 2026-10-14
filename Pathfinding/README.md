@@ -405,14 +405,14 @@ it's why routes suit *deliberate* paths rather than general navigation.
 ## Planned improvements (TBD)
 
 **Status: proposed, not implemented in this library.** Recorded 2026-09-21 after
-comparing this library with the CastleWars project copy. The sections above
+comparing this library with a game project's own copy of it. The sections above
 continue to describe the current API. Names and defaults for new options below
 are still to be decided; they must not be treated as available API.
 
 The goal is to bring over useful movement fixes without replacing this library
 with the game copy. In particular, preserve `Paths` (bounded concurrency,
 priority, aging and cancellation), sleeping idle/arrived `PathAgent` instances,
-and the existing route registry and follower modes. The CastleWars copy does
+and the existing route registry and follower modes. The game copy does
 not contain all of those features. Adaptive waypoint spacing, cost options and
 request cancellation already exist here and should be extended, not reintroduced.
 
@@ -442,7 +442,7 @@ radii can consequently fail to arrive.
 **Planned change:** use horizontal distance plus a separate, bounded vertical
 check, accounting for the rig's root-to-ground offset. Support both floor
 waypoints and root-position destinations. Make tolerances appropriate for
-multiple rig sizes rather than copying CastleWars constants. Use a consistent
+multiple rig sizes rather than copying one game's constants. Use a consistent
 check for following waypoints and reporting final arrival.
 
 **Expected benefit:** fewer false stalls without declaring arrival on an upper
@@ -537,7 +537,7 @@ follower and a path agent. Preserve the original broker and idle sleep behavior.
 
 ### 7. Adapt useful authored-route improvements
 
-Extend the existing `Routes.follower` rather than replacing it with CastleWars'
+Extend the existing `Routes.follower` rather than replacing it with the game copy's
 `RouteWalker`, which depends on game configuration and has a different API.
 
 Optional checked lookahead can combine safe flat segments. Once a shortcut is
@@ -566,7 +566,7 @@ An optional recovery method must not become a required member of every custom
 
 **Jumping:** `agentCanJump` already exists. Keep its current default of true for
 compatibility. Add a defensive check that refuses an unexpected jump waypoint
-when false. CastleWars' default of no jumping belongs in game configuration.
+when false. A game that never jumps should say so in its own configuration.
 This option alone cannot make a disconnected no-jump navmesh traversable or
 prevent jumps commanded by some other controller.
 
@@ -584,7 +584,7 @@ ready-to-copy general-purpose guarantees:
   evaluated reliably.
 - Respect collision groups and make handling of transient humanoids explicit.
   Validate rig offsets, slope/step tolerances, moving obstacles and stacked
-  surfaces beyond the particular maps used by CastleWars.
+  surfaces beyond the particular maps the game copy was tuned on.
 - Profile raycast work with many moving agents. Limit candidate scans and probe
   budgets; shortcuts must not trade smoother motion for excessive frame cost.
   Any caching needs invalidation appropriate to dynamic geometry.
@@ -600,7 +600,7 @@ Suggested order: fix stalled-waypoint/lifecycle bugs first; generalize arrival
 and travel checks; add optional smoothing and replanning policy; then assess
 route smoothing and opt-in recovery separately.
 
-CastleWars references (relative to that project's root):
+Game-copy references (relative to that project's root):
 
 - `src/ServerStorage/Libraries/Pathfinding/PathAgent.luau`
 - `src/ServerStorage/Libraries/Pathfinding/TravelSafety.luau`
@@ -614,7 +614,7 @@ Extract the reusable cases and add broker, existing API, rig-size, cost-policy,
 route-mode and multi-agent performance coverage. Run live movement tests on
 representative maps before choosing new defaults or marking this work complete.
 
-**Excluded:** CastleWars castle/tower routes, target priorities, map ramps and
+**Excluded:** the game's own routes, target priorities, map ramps and
 collision helpers, bot rig ownership, respawn physics and game-specific tuning.
 Those changes should remain in the game. No library change can guarantee correct
 traversal over disconnected or incorrectly authored navigation geometry.

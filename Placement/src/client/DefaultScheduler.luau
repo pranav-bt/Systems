@@ -1,6 +1,6 @@
 -- Self-contained default scheduler used when the host does not inject one.
 --
--- Replaces the CastleWars `ReplicatedStorage.Client.ClientScheduler`. Phase
+-- Replaces the game's `ReplicatedStorage.Client.ClientScheduler`. Phase
 -- names match what the placement modules request; RunService events are chosen
 -- to mirror the original ClientScheduler wiring:
 --   "Input"          -> PreRender  (early each frame, after input is polled)

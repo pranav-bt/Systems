@@ -559,7 +559,7 @@ at which the deferred path earns its keep.
 
 ## From game system to package
 
-Started as `src/server/Systems/Zone.lua` in CastleWars.
+Started as an in-game system, `src/server/Systems/Zone.lua`.
 
 **Decoupling (no behaviour change):**
 

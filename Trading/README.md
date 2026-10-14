@@ -101,7 +101,7 @@ Four things this module does that a straightforward implementation would not.
 **The cap and the loop count the same thing.** `#lines` measures only the array part of a
 table, while generalized iteration walks *every* key — so a payload of one array entry plus
 fifty string-keyed ones has a length of 1, sails past a cap of nine, and hands fifty-one
-lines to the loop. Measured on the in-game version from CA: cap 2, length 1, **51 lines
+lines to the loop. Measured on the in-game version: cap 2, length 1, **51 lines
 processed**. Offers are now read with a numeric loop, so anything hung off a non-numeric key
 is ignored rather than trusted.
 
@@ -200,7 +200,7 @@ gone. Draw them; don't expect them to be the objects the server holds.
 
 ## From game system to package
 
-Started in the CA game, where it traded companions. Changes:
+Started in a game where it traded companions. Changes:
 
 1. **`readLine`, `availableOf` and `swap` are injected** rather than reaching into the game's
    persistence, its companion content and its loadout server.
