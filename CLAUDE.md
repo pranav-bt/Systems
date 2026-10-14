@@ -2,7 +2,7 @@
 
 Notes for Claude Code (and anyone using AI) in the libraries repo.
 
-**Conventions live in [README.md](README.md)** — extraction rules, per-library
+**Conventions live in [CONVENTIONS.md](CONVENTIONS.md)** — extraction rules, per-library
 notes, the Lune test suites in [Tests/](Tests), and which packages are formatted
 with stylua/selene (the AI suite is; the CastleWars extractions deliberately are
 not). Read it first; this file only covers what it does not.
