@@ -29,15 +29,18 @@ lune run Tests/tests/test-rebirth.luau           # the ladder + the trade       
 lune run Tests/tests/test-rebirth-client.luau    # its client state                35
 lune run Tests/tests/test-bots-blackboard.luau   # sensors + invalidate            30
 lune run Tests/tests/test-pathfinding-costs.luau # what PathAgent asks CreatePath  22
+lune run Tests/tests/test-pathfinding-broker.luau # one answer per request; drift  37
 lune run Tests/tests/test-objectpool.luau        # instance reuse + cap policy     65
 lune run Tests/tests/test-zone-query.luau        # stateless geometry queries      44
 lune run Tests/tests/test-timesync.luau          # latency, and who names it       26
 lune run Tests/tests/test-heatmap.luau           # RLE + the flush failure path    24
 lune run Tests/tests/test-lagcomp-snapshots.luau # the pose ring buffer            46
 lune run Tests/tests/test-lagcomp-rewind.luau    # claim gates + LOS filter        49
+lune run Tests/tests/test-lagcomp-facade.luau    # the public table, LOS invalidate 24
+lune run Tests/tests/test-nametags.luau          # overhead labels + colour paths   26
 ```
 
-1398 checks at present, all passing.
+1485 checks at present, all passing.
 
 Libraries parked under `Temp/` (gitignored) keep their tests beside them rather than here, and
 are run directly: `lune run Temp/test-moveables.luau`. A published test that loads an

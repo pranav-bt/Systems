@@ -218,11 +218,28 @@ important. Priority decides who goes *first*; aging guarantees everyone goes
 
 ### A moved goal cancels its own computation
 
-`SetGoal` cancels the in-flight request whenever the destination actually moves.
-If the computation had not started, it never runs at all; if it had, the result
-arrives flagged `cancelled` and the agent discards it rather than walking to
-where the target used to be. Calling `SetGoal` every tick with the *same*
-position — which the `Mover` contract explicitly allows — cancels nothing.
+`SetGoal` cancels the in-flight request once the destination has moved more than
+`repathThreshold` (default 8) from the goal that request is computing a path to —
+the same drift the walk itself tolerates before it repaths. If the computation had
+not started, it never runs at all; if it had, the result arrives flagged
+`cancelled` and the agent discards it rather than walking to where the target used
+to be. Calling `SetGoal` every tick with the *same* position — which the `Mover`
+contract explicitly allows — cancels nothing, and neither does a target that
+shuffles a few studs: a chaser keeps its place in the queue, gets its path, and the
+walk's drift check takes over. (It used to cancel on *any* move, so a chaser
+re-queued at the back every tick, lost the age that protects it from starvation,
+and under load never got a path.) `Stop` and `Destroy` always cancel.
+
+### Every request is answered exactly once
+
+`onComplete` fires once per request: with the result, or flagged `cancelled`. That
+includes a request cancelled before it started and one dropped by `reset` — those
+are answered on the next resumption cycle (`task.defer`), never from inside
+`cancel`, because the canceller is often the code the answer resumes. A request
+cancelled while queued used to be dropped silently, and a `PathAgent` suspended on
+it was never resumed: an agent whose goal moved while the broker was saturated
+froze for good, still reporting `Computing` or `Moving`.
+(`Tests/tests/test-pathfinding-broker.luau` covers both.)
 
 ### Idle agents cost nothing
 
@@ -384,3 +401,220 @@ geometry the author didn't anticipate — there is no path to recompute and no
 finer resolution to fall back to. A stall is reported as `Stuck` and the decision
 layer picks something else. That is the price of exact authored movement, and
 it's why routes suit *deliberate* paths rather than general navigation.
+
+## Planned improvements (TBD)
+
+**Status: proposed, not implemented in this library.** Recorded 2026-09-21 after
+comparing this library with the CastleWars project copy. The sections above
+continue to describe the current API. Names and defaults for new options below
+are still to be decided; they must not be treated as available API.
+
+The goal is to bring over useful movement fixes without replacing this library
+with the game copy. In particular, preserve `Paths` (bounded concurrency,
+priority, aging and cancellation), sleeping idle/arrived `PathAgent` instances,
+and the existing route registry and follower modes. The CastleWars copy does
+not contain all of those features. Adaptive waypoint spacing, cost options and
+request cancellation already exist here and should be extended, not reintroduced.
+
+### 1. Do not advance past a stalled waypoint
+
+**Problem:** `PathAgent` currently assigns `stalled = reduceSpacing()`. At the
+minimum spacing, that returns false even though movement has stalled. The outer
+waypoint loop can then advance past a point the agent never reached.
+
+**Planned change:** separate "movement stalled" from "spacing was reduced".
+Always stop advancing the current path after a stall. Recompute with finer
+spacing when possible; otherwise report `Stuck` and apply the chosen recovery
+policy. Preserve the existing sticky status semantics.
+
+**Expected benefit:** agents do not attempt later segments through a corner or
+obstacle that blocked the current segment.
+
+**Acceptance:** a blocked waypoint at minimum spacing is never skipped; coarse
+stalls still refine the route; real progress or a new goal clears `Stuck`.
+
+### 2. Make arrival checks aware of floor and character height
+
+**Problem:** root-to-waypoint 3D distance treats the normal height of a character
+above a floor waypoint as remaining travel distance. Large rigs or tight arrival
+radii can consequently fail to arrive.
+
+**Planned change:** use horizontal distance plus a separate, bounded vertical
+check, accounting for the rig's root-to-ground offset. Support both floor
+waypoints and root-position destinations. Make tolerances appropriate for
+multiple rig sizes rather than copying CastleWars constants. Use a consistent
+check for following waypoints and reporting final arrival.
+
+**Expected benefit:** fewer false stalls without declaring arrival on an upper
+or lower floor simply because X/Z coordinates match.
+
+**Acceptance:** cover floor/root targets, multiple rig sizes, ramps and stacked
+floors. Document any unavoidable ambiguity in targets provided only as Vector3.
+
+### 3. Validate direct fallback movement
+
+**Problem:** after a failed path computation, a destination inside
+`straightLineMax` currently permits a direct MoveTo based on distance alone.
+Nearby destinations can still lie across a gap or behind a wall.
+
+**Planned change:** require a verified walkable segment before this fallback.
+Check floor support across the agent's width, slope/step limits, obstruction
+clearance and prohibited terrain. If the segment is unsafe, hold position and
+report `Unreachable`; update the status documentation accordingly. A failed
+path by itself must not trigger a retreat along the previous journey.
+
+**Expected benefit:** fewer avoidable falls and attempts to walk through nearby
+obstacles when the navmesh cannot produce a route.
+
+**Acceptance:** allow a supported unobstructed short walk; reject gaps, edges,
+walls, forbidden ground and unsafe vertical transitions. Revalidate when moving
+geometry invalidates a previously safe segment.
+
+### 4. Add optional checked lookahead and continuous handoff
+
+**Problem:** walking every small waypoint can cause braking and zigzag movement
+on otherwise open ground. Very coarse waypoint spacing can hide important
+corners instead.
+
+**Planned change:** retain a sufficiently detailed computed path, but aim at a
+farther waypoint when the entire shortcut is verified walkable. If the farthest
+candidate is blocked, try a nearer candidate. Hand off to the next clear segment
+before braking at an intermediate point. Keep lookahead and handoff configurable
+and allow smoothing to be disabled.
+
+Preserve jump/custom traversal actions and any labels or mandatory transitions
+that consumers rely on. Never bypass required traversal merely because the
+endpoint is visible. Do not silently replace the current spacing defaults with
+the game's values.
+
+**Expected benefit:** longer, smoother runs while retaining the detail needed
+around corners and narrow approaches.
+
+**Acceptance:** test open-ground bends, walls, ledges, intermediate transitions,
+shorter valid shortcuts, disabled smoothing and uninterrupted long movement.
+
+### 5. Replan on relevant events without interrupting healthy travel
+
+**Problem:** the periodic repath timer interrupts valid routes, and the follower
+currently does not use `Path.Blocked` to react directly to a new obstruction.
+
+**Planned change:** listen for blockages affecting the remaining route, ignoring
+blocks behind the agent. Replan for meaningful goal drift, blockage and lack of
+progress. Provide an explicit policy for periodic refresh; where refresh is
+requested, avoid unnecessary pauses while a still-valid route is followed.
+All computations must continue through `Paths`.
+
+Preserve compatibility with the documented `repathInterval`. The project copy
+repurposes it as a failed-path retry delay; do not port that semantic change.
+Use separate retry/refresh options or a documented migration if needed. Bound
+failed-path retries so unreachable goals cannot flood the broker.
+
+**Acceptance:** obstacles ahead trigger replanning, obstacles behind do not,
+healthy paths remain continuous, and goal changes/cancellation work under a
+saturated request queue. Disconnect path events when their path is replaced or
+the agent is destroyed.
+
+### 6. Strengthen progress tracking and movement lifecycle
+
+**Planned changes:**
+
+- Measure meaningful progress toward the current target, rather than counting
+  any displacement as success. Sideways shuffling must not indefinitely hide a
+  stall. Retain tunable thresholds suitable for slow agents and different rigs.
+- Refresh long-running MoveTo commands before they expire, without changing the
+  target or restarting the progress timer merely because a command was issued.
+- Extend the existing broker cancellation with journey/generation checks where
+  needed across yielded work, diagnostic probes and any future recovery loop.
+  Stop/restart at the same destination must not reactivate old work.
+- Ensure `SetGoal(nil)` stops owned movement, and stopping an already idle mover
+  does not overwrite another controller's MoveTo. Apply the same principle to
+  route followers and document the caller's responsibility to hand off control.
+- Clean up replaced Path objects, connections and work on destruction.
+
+**Acceptance:** test stop during compute, rapid stop/start, replacement goals,
+destruction, long segments, sideways movement, and handoff between a route
+follower and a path agent. Preserve the original broker and idle sleep behavior.
+
+### 7. Adapt useful authored-route improvements
+
+Extend the existing `Routes.follower` rather than replacing it with CastleWars'
+`RouteWalker`, which depends on game configuration and has a different API.
+
+Optional checked lookahead can combine safe flat segments. Once a shortcut is
+selected, advance route progress consistently so a bypassed waypoint cannot
+pull the agent backward. Keep exact waypoint traversal available, preserve
+height-changing/mandatory nodes, and consider explicit per-node arrival radii
+or mandatory flags for tight approaches. New option names remain TBD.
+
+Preserve registry lookup, `Progress`, `startAtNearest`, and `once`, `loop`, and
+`pingPong` behavior. Any pause/resume extension must be explicit: do not silently
+change the current restart semantics of `SetRoute` or reset semantics of `Stop`.
+
+**Acceptance:** cover mandatory corners/approaches, safe shortcuts, monotonic
+progress within each traversal direction, loop boundaries, ping-pong reversal,
+route replacement and movement ownership. Exact mode must remain exact.
+
+### 8. Optional bounded recovery; preserve jump compatibility
+
+**Recovery:** consider walking back to a previously observed, still-safe point
+only after a confirmed physical stall and finer-path attempts. Keep it opt-in
+and disabled by default. Limit attempts, time and distance; cancel immediately
+on stop, new goal or destruction. Reject history across disconnected ground,
+jumps or drops. Do not recover merely because a destination returns `NoPath`.
+An optional recovery method must not become a required member of every custom
+`Mover`. Verify that recovery cannot create repeated forward/backward loops.
+
+**Jumping:** `agentCanJump` already exists. Keep its current default of true for
+compatibility. Add a defensive check that refuses an unexpected jump waypoint
+when false. CastleWars' default of no jumping belongs in game configuration.
+This option alone cannot make a disconnected no-jump navmesh traversable or
+prevent jumps commanded by some other controller.
+
+### Requirements before porting the geometry helpers
+
+The project `TravelSafety` and `PathSmoothing` modules are starting points, not
+ready-to-copy general-purpose guarantees:
+
+- Check full agent height as well as width; the current shortcut helper probes
+  near root height and does not consume `agentHeight` for full clearance.
+- Preserve terrain/modifier intent. The project checks some infinite-cost ground
+  but does not account for finite weighted preferences, all modifier volumes,
+  or all traversal labels. Smoothing must not undo the route's cost policy.
+  A conservative option is to disable shortcuts when that policy cannot be
+  evaluated reliably.
+- Respect collision groups and make handling of transient humanoids explicit.
+  Validate rig offsets, slope/step tolerances, moving obstacles and stacked
+  surfaces beyond the particular maps used by CastleWars.
+- Profile raycast work with many moving agents. Limit candidate scans and probe
+  budgets; shortcuts must not trade smoother motion for excessive frame cost.
+  Any caching needs invalidation appropriate to dynamic geometry.
+
+### Implementation scope and validation plan
+
+Likely scope: focused changes to `src/PathAgent.luau`, new travel-check and
+smoothing helpers, optional additions to `src/Routes.luau`, and API/type/export
+updates only where needed. Keep `src/Paths.luau` as the broker. Add regression
+tests and update the implemented API documentation as each feature ships.
+
+Suggested order: fix stalled-waypoint/lifecycle bugs first; generalize arrival
+and travel checks; add optional smoothing and replanning policy; then assess
+route smoothing and opt-in recovery separately.
+
+CastleWars references (relative to that project's root):
+
+- `src/ServerStorage/Libraries/Pathfinding/PathAgent.luau`
+- `src/ServerStorage/Libraries/Pathfinding/TravelSafety.luau`
+- `src/ServerStorage/Libraries/Pathfinding/PathSmoothing.luau`
+- `src/server/Systems/Bots/RouteWalker.luau`
+- `lune/test-navigation.luau`
+
+The project's 41 navigation regression checks passed during the 2026-09-21
+review. They test the project implementation, not this proposed integration.
+Extract the reusable cases and add broker, existing API, rig-size, cost-policy,
+route-mode and multi-agent performance coverage. Run live movement tests on
+representative maps before choosing new defaults or marking this work complete.
+
+**Excluded:** CastleWars castle/tower routes, target priorities, map ramps and
+collision helpers, bot rig ownership, respawn physics and game-specific tuning.
+Those changes should remain in the game. No library change can guarantee correct
+traversal over disconnected or incorrectly authored navigation geometry.

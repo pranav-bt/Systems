@@ -302,11 +302,13 @@ function PathAgent.new(humanoid: Humanoid, root: BasePart, options: Options?): P
 		end
 	end
 
-	-- The in-flight broker request, if any. SetGoal cancels it when the goal
-	-- moves: a queued request then never runs, and one already computing has its
+	-- The in-flight broker request, if any, and the goal it is computing a path to.
+	-- SetGoal cancels it once the goal has moved past repathThreshold from that
+	-- goal: a queued request then never runs, and one already computing has its
 	-- result discarded rather than walked to (see Paths.luau).
 	local pending: Paths.Handle? = nil
 	local pendingResult: Paths.Result? = nil
+	local computingFor: Vector3? = nil
 
 	-- Ask the broker for a path and suspend until it answers. Returns the result,
 	-- or nil if the agent was destroyed while waiting.
@@ -316,6 +318,7 @@ function PathAgent.new(humanoid: Humanoid, root: BasePart, options: Options?): P
 	-- what lets a voxel or grid pathfinder share the same queue.
 	local function computePath(from: Vector3, to: Vector3): Paths.Result?
 		pendingResult = nil
+		computingFor = to
 		local thread = coroutine.running()
 		pending = Paths.request({
 			priority = opts.priority,
@@ -330,6 +333,7 @@ function PathAgent.new(humanoid: Humanoid, root: BasePart, options: Options?): P
 			onComplete = function(result)
 				pendingResult = result
 				pending = nil
+				computingFor = nil
 				task.spawn(thread)
 			end,
 		})
@@ -493,11 +497,22 @@ function PathAgent.new(humanoid: Humanoid, root: BasePart, options: Options?): P
 			return
 		end
 
-		-- The in-flight computation is now for the wrong place. Cancelling it
-		-- means a queued request never runs at all, and one already computing has
-		-- its result discarded instead of walked to.
+		--[[
+			The in-flight computation is for the wrong place only once the goal has drifted
+			past repathThreshold from the goal it is computing to -- the same drift the walk
+			itself tolerates before it repaths (goalDrifted). Cancelling means a queued request
+			never runs at all, and one already computing has its result discarded instead of
+			walked to.
+
+			It used to cancel on ANY move. A chaser re-setting a target that shuffles a stud a
+			tick then cancelled every tick and re-queued at the back of the broker each time,
+			losing the age that is its only protection against starvation: under load it never
+			got a path at all. Now a near-enough computation finishes, the walk starts, and the
+			walk's own drift check takes over.
+		]]
 		local inFlight = pending
-		if inFlight then
+		local target = computingFor
+		if inFlight and (position == nil or target == nil or (position - target).Magnitude > opts.repathThreshold) then
 			inFlight:cancel()
 		end
 		wake() -- a sleeping agent has somewhere to be

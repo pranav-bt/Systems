@@ -6,7 +6,7 @@ nothing outside its own folder except declared Wally packages.
 Two lineages live here:
 
 - **Extracted from CastleWars** (Zone, Nametags, Heatmap, TimeSync, LagCompensation,
-  Placement, Matchmaking) — game-specific coupling replaced with injected config /
+  Placement) — game-specific coupling replaced with injected config /
   callbacks or self-provisioning; extracted read-only, source game unmodified. The extraction
   conventions below apply to these.
 - **The AI suite, built new** (Bots, Pathfinding, Perception, TacticalQuery, HTN) — five
@@ -46,7 +46,6 @@ Two lineages live here:
 | **TimeSync** | server + client | none | Per-player round-trip latency measurement (rolling average). Pairs with LagCompensation. An echo is only believed if it carries a value the server actually sent, and that value is consumed on use -- so a client cannot name its own latency, replay a ping, or flood the sample window. |
 | **LagCompensation** | server | none | Server-authoritative rewind/snapshot hit-validation core (claim ∩ verify). The flagship. Pose history in a ring buffer on the engine-synced clock, interpolated between samples; claims bounded in both directions (stale beyond `MAX_REWIND`, ahead beyond `FUTURE_SLACK`) and capped by a per-key token bucket. The line-of-sight filter is cached and invalidated on join/leave/respawn rather than rebuilt per raycast; hitbox extents are cached on first sight with `RefreshExtents(character, size?)` for a character that genuinely changes shape. |
 | **Placement** | server + client + shared | `nezuo/spark` | Free-form structure placement: grid-snapped preview ghost + server validation. |
-| **Matchmaking** | server | `evaera/promise` | Cross-server, region-shardable MemoryStore matchmaking with leader election + teleport hand-off. |
 | **ObjectPool** | any | none | Instance reuse. One pool per template (an object, not a singleton keyed by string), with the release strategy injected -- unparent, park out of sight for particles whose warm-up must survive, or disable in place. Explicit cap policy (grow / steal-oldest / nil), warm-up, and a `release` that no-ops on a foreign or double release rather than crashing. |
 | **Bots** | server | none | Generic, body-agnostic agent brain: blackboard sensing + decaying working-memory facts, utility goal selection with commitment, sequenced actions with guaranteed exits, squad token pools, per-bot tick pacing under a budgeted per-frame scheduler, out-of-band `stimulate`. |
 | **Pathfinding** | server | none | Movement behind two tiny contracts: `Mover` ("go to this position" -- `PathAgent` is the PathfindingService implementation) and `RouteFollower` ("walk this list" -- authored waypoints with raw MoveTo, no navmesh), authored via `Routes`. A shared `Paths` broker bounds concurrent navmesh computations, ages the queue so none starve, and cancels work a moved goal invalidated. Pairs with Bots; depends on nothing. |
@@ -63,6 +62,24 @@ extraction).
 `Temp/` is gitignored and holds libraries kept locally rather than published, with their tests
 beside them. Nothing in it ships, and the suite in [`Tests/`](Tests) never references it — a
 published test that loads an unpublished library is a suite that fails on a fresh clone.
+
+- **Matchmaking** (server) — cross-server MemoryStore queue with leader election, teleport
+  hand-off and backfill. **Superseded by `neurealroblox/matchmaker`** and its family
+  (`leader-election`, `regions`, `session-router`, `skill-rating`), which this repo's consumer
+  games already depend on through `server-bundle`.
+
+  Compared against the real source, not the registry blurb: every capability ours has, theirs
+  has — including the two I expected to be ours alone. `session-router` backfills into live
+  servers and packs into *the fullest with room*, a better policy than our first-with-space;
+  and both queues TTL-self-heal a crashed server's entries. Theirs additionally has
+  rating-based matching (expanding windows gated by accumulated wait), rating-balanced teams
+  and a skill-rating package, none of which ours has at all. Ours also shipped with its
+  headline region sharding **disabled** behind `TEMP` comments.
+
+  Genuinely only ours, and worth remembering if it ever comes back: a **variable batch size**
+  (`MIN_PLAYERS`…`MAX_PLAYERS` with a `GRACE_SECONDS` window) rather than a fixed `matchSize`,
+  and party grouping by originating `JobId` so lobby-mates land together. Both are expressible
+  through their `onMatchFormed` — a config on their matchmaker, not a second library.
 
 - **Moveables** (server + client) — authored objects follow waypoint paths (ping-pong + stops)
   and carry riders standing on them. Tested and correct (19 checks, `Temp/test-moveables.luau`),

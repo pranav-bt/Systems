@@ -126,6 +126,7 @@ runtime config):
 | `ApproveBox` | `(player: Player, claimed: { Model }, boxCFrame: CFrame, size: Vector3, t: number) -> { Model }` | Claim ∩ verify for a box volume (melee/dash); returns the subset overlapping the box at some plausible pose. |
 | `ApproveRadius` | `(player: Player, claimed: { Model }, center: Vector3, radius: number, t: number) -> { Model }` | Claim ∩ verify for a sphere volume (AoE/splash/direct). |
 | `HasLineOfSight` | `(from: Vector3, to: Vector3) -> boolean` | Static-world occlusion test; true if no wall sits between the points (or the hit is within `LOS_IMPACT_SLACK` of the target). |
+| `InvalidateLineOfSightFilter` | `() -> ()` | Mark the LOS exclude list stale so the next `HasLineOfSight` rebuilds it. It rebuilds by itself only when a player joins, leaves or respawns; call this when the excluded set changes some other way (an NPC spawned into an excluded folder, a folder created or streamed in). Cheap: it sets a flag. |
 | `AllowRate` | `(player: Player, key: string, perSecond: number) -> boolean` | Fixed 1s-bucket per player+key flood guard; rejects (`"RateLimited"`) when over budget. |
 | `Reject` | `(player: Player, reason: RejectReason) -> ()` | Bump a reject counter and log the reason. |
 | `GetCounters` | `() -> { [string]: number }` | Per-reason rejection tallies. |

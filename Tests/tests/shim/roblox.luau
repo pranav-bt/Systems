@@ -231,6 +231,27 @@ rbx.CFrame = {
 	end,
 }
 
+-- ------------------------------------------------------------------- UDim2 --
+
+-- Scale and offset per axis, as the engine stores it. Only the constructors library code
+-- reaches for; nothing here lays anything out.
+local function udim2(xScale, xOffset, yScale, yOffset)
+	return {
+		X = { Scale = xScale, Offset = xOffset },
+		Y = { Scale = yScale, Offset = yOffset },
+	}
+end
+
+rbx.UDim2 = {
+	new = udim2,
+	fromOffset = function(x, y)
+		return udim2(0, x or 0, 0, y or 0)
+	end,
+	fromScale = function(x, y)
+		return udim2(x or 0, 0, y or 0, 0)
+	end,
+}
+
 -- ------------------------------------------------------------------ Color3 --
 
 -- Stored as floats, as the engine does, with a fromRGB that divides by 255. Enough for a
@@ -256,6 +277,13 @@ rbx.Color3 = {
 -- -------------------------------------------------------------------- Enum --
 
 rbx.Enum = {
+	-- Fonts are only ever assigned and compared, never measured, so the names are enough.
+	Font = {
+		GothamBold = "GothamBold",
+		Gotham = "Gotham",
+		SourceSans = "SourceSans",
+		SourceSansBold = "SourceSansBold",
+	},
 	-- Filter modes are compared by identity in library code, so these only have to be stable
 	-- distinct values rather than the engine's own numbers.
 	RaycastFilterType = {
@@ -558,6 +586,13 @@ local function newPart()
 		end
 		return copy
 	end
+	function part.GetChildren(self)
+		local out = {}
+		for _, kid in rawget(self, "_kids") or {} do
+			table.insert(out, kid)
+		end
+		return out
+	end
 	function part.GetDescendants(self)
 		local out = {}
 		for _, kid in rawget(self, "_kids") or {} do
@@ -786,6 +821,28 @@ local function makeInstance(class)
 			-- Containers so FindFirstChildOfClass/FindFirstChildWhichIsA can walk them, which
 			-- is how a rig locates the animator it should load tracks on.
 			local host = newContainer(class)
+			if class == "Humanoid" then
+				--[[
+					The properties and signals library code reads off a live humanoid. `Died` in
+					particular is connected by anything that tears rigs down, and a humanoid
+					without it is a shape the engine never produces.
+
+					`rbx.kill(humanoid)` drops the health and fires Died together, which is the
+					order the engine does it in.
+				]]
+				host.Health = 100
+				host.MaxHealth = 100
+				host.NameDisplayDistance = 100
+				host.HealthDisplayDistance = 100
+				host.WalkSpeed = 16
+				host.JumpPower = 50
+				local died, fireDied = makeSignal()
+				local healthChanged, fireHealthChanged = makeSignal()
+				host.Died = died
+				host.HealthChanged = healthChanged
+				host._fireDied = fireDied
+				host._fireHealthChanged = fireHealthChanged
+			end
 			if class == "Animator" then
 				--[[
 					LoadAnimation hands back a fake AnimationTrack that records what was asked of
@@ -929,6 +986,29 @@ local function makeInstance(class)
 				return queried == class or queried == "Instance"
 			end
 			return constraint
+		elseif class == "BillboardGui" or class == "SurfaceGui" then
+			-- A property bag with children, because a nametag is asserted on by reading what was
+			-- set on it: size, offset, adornee, who it hides from.
+			local gui = newContainer(class)
+			gui.Size = udim2(0, 0, 0, 0)
+			gui.StudsOffset = v3(0, 0, 0)
+			gui.MaxDistance = math.huge
+			gui.Adornee = nil
+			gui.PlayerToHideFrom = nil
+			gui.Enabled = true
+			gui.AlwaysOnTop = false
+			return gui
+		elseif class == "TextLabel" or class == "TextButton" then
+			local label = newContainer(class)
+			label.Size = udim2(0, 0, 0, 0)
+			label.Text = ""
+			label.TextColor3 = color3(1, 1, 1)
+			label.TextScaled = false
+			label.TextStrokeTransparency = 1
+			label.BackgroundTransparency = 0
+			label.Font = "SourceSans"
+			label.Visible = true
+			return label
 		elseif class == "StringValue" then
 			local value = { ClassName = "StringValue", Name = "StringValue", Value = "", Parent = nil }
 			function value.IsA(_, queried)
@@ -1265,6 +1345,29 @@ local heartbeat, fireHeartbeat, heartbeatHandlers = makeSignal()
 ]]
 local localPlayer = nil
 
+--[[
+	Moves a player onto a team, firing the property signal the way the engine does.
+
+	A Team here is the two fields library code reads: a name and a TeamColor whose `.Color` is
+	the Color3. Nothing here manages team membership lists.
+]]
+-- Drops a humanoid's health to zero and fires Died, in that order.
+function rbx.kill(humanoid)
+	humanoid.Health = 0
+	if humanoid._fireHealthChanged then
+		humanoid._fireHealthChanged(0)
+	end
+	if humanoid._fireDied then
+		humanoid._fireDied()
+	end
+end
+
+function rbx.setTeam(player, name, color)
+	local team = if name then { Name = name, TeamColor = { Color = color } } else nil
+	player:_setProperty("Team", team)
+	return team
+end
+
 function rbx.setLocalPlayer(player)
 	localPlayer = player
 end
@@ -1485,6 +1588,23 @@ rbx.game = {
 }
 
 -- Test controls.
+--[[
+	The parts every real character has.
+
+	A character with no Head and no Humanoid is not a shape the engine produces, and library
+	code that walks one for either found neither -- so anything reading them was exercised
+	against a rig that could not exist.
+]]
+local function addCharacterParts(character)
+	local head = newPart()
+	head.Name = "Head"
+	head.Parent = character
+
+	local humanoid = rbx.Instance.new("Humanoid")
+	humanoid.Parent = character
+	return head, humanoid
+end
+
 function rbx.addPlayer(name, position)
 	local hrp = newPart()
 	hrp.Name = "HumanoidRootPart"
@@ -1494,6 +1614,7 @@ function rbx.addPlayer(name, position)
 	local character = newContainer("Model")
 	character.Name = name
 	character:Add(hrp)
+	addCharacterParts(character)
 	-- Parented, because library code checks `character.Parent` before acting on it -- a
 	-- character that has been torn down mid-defer must not be resolved. An unparented
 	-- character silently fails that guard and nothing spawns.
@@ -1511,6 +1632,8 @@ function rbx.addPlayer(name, position)
 		-- talking to somebody who may already have left.
 		Parent = playerService,
 		Character = character,
+		-- No team until a test assigns one, which is what "no Team and no resolver" looks like.
+		Team = nil,
 		_hrp = hrp,
 		CharacterAdded = characterAdded,
 		CharacterRemoving = characterRemoving,
@@ -1524,6 +1647,30 @@ function rbx.addPlayer(name, position)
 	function player.SetAttribute(_, key, value)
 		attributes[key] = value
 		local entry = attributeSignals[key]
+		if entry then
+			entry.fire()
+		end
+	end
+	--[[
+		Property-changed signals, per property name.
+
+		Fired by `rbx.setPlayerProperty(player, key, value)` rather than by assignment: the
+		shim's player is a plain table, so an assignment cannot be intercepted, and a test that
+		wants to move a player between teams should say so explicitly anyway.
+	]]
+	local propertySignals = {}
+	function player.GetPropertyChangedSignal(_, key)
+		local entry = propertySignals[key]
+		if not entry then
+			local signal, fire = makeSignal()
+			entry = { signal = signal, fire = fire }
+			propertySignals[key] = entry
+		end
+		return entry.signal
+	end
+	function player._setProperty(_, key, value)
+		player[key] = value
+		local entry = propertySignals[key]
 		if entry then
 			entry.fire()
 		end
@@ -1561,6 +1708,7 @@ function rbx.newCharacter(name, position)
 	local character = newContainer("Model")
 	character.Name = name
 	character:Add(hrp)
+	addCharacterParts(character)
 	rbx.workspace:Add(character)
 	return character
 end

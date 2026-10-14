@@ -117,6 +117,10 @@ function LagCompensation.new(config: Config?)
 		ApproveBox = rewind.ApproveBox,
 		ApproveRadius = rewind.ApproveRadius,
 		HasLineOfSight = rewind.HasLineOfSight,
+		-- For a host that changes the excluded set itself (an NPC spawned into an excluded
+		-- folder, a folder streamed in): the LOS filter otherwise only rebuilds on a player
+		-- joining, leaving or respawning.
+		InvalidateLineOfSightFilter = rewind.InvalidateLineOfSightFilter,
 		AllowRate = rewind.AllowRate,
 		Reject = rewind.Reject,
 		GetCounters = rewind.GetCounters,

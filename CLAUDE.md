@@ -76,6 +76,28 @@ player-authored and cannot be blocked by hand.
 in the shim that captures what was asked for — an option that never reaches `CreatePath` looks
 exactly like one that works.
 
+### 3. Pathfinding broker + SetGoal drift, LagCompensation facade — Heat — **done** (2026-10-01)
+
+Found while vendoring the AI suite into Heat (`../Heat`, a GTA-style game whose police will
+chase), all three by reading the code, each now with a regression test that fails on the old
+source:
+
+- **A queued request cancelled was never answered** (`Paths.luau`). `pump` dropped it silently;
+  `PathAgent` suspends on its request until `onComplete`, so an agent whose goal moved while all
+  `maxConcurrent` slots were busy froze for good, reporting `Computing`/`Moving` (and no action
+  times out by itself). Every request is now answered exactly once: `cancel` takes a queued entry
+  off the queue and delivers `{ cancelled = true }` via `task.defer` — never synchronously,
+  because the canceller is usually the code the answer resumes; `reset` does the same for every
+  entry it drops. `Tests/tests/test-pathfinding-broker.luau`, 37 checks.
+- **`SetGoal` cancelled on any move > 1e-3** (`PathAgent.luau`), not the `repathThreshold` the
+  walk uses. A chaser re-setting a shuffling target cancelled and re-queued every tick, losing
+  its queue age each time — under load it never got a path. It now cancels only when the new goal
+  is past `repathThreshold` from the goal being computed (`computingFor`); `Stop`/`Destroy`
+  still always cancel. Same test file.
+- **`InvalidateLineOfSightFilter` was unreachable** (`LagCompensation/src/init.luau`): defined on
+  Rewind (whose tests called it there) but missing from the table `LagCompensation.new` returns.
+  `Tests/tests/test-lagcomp-facade.luau` asserts the whole public table, 24 checks.
+
 ### Fallout worth keeping: `Tests/tests/vendor/` is gone
 
 The archetype suites ran against **copies** of `Bots/src`, because the loader could not resolve

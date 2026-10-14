@@ -22,6 +22,13 @@
 --   * CANCELLATION. A goal that moves cancels its own in-flight request. If it
 --     had not started yet, it never runs at all; if it had, its result is
 --     delivered flagged `cancelled` so nobody walks a stale path.
+--   * EXACTLY ONE ANSWER PER REQUEST. onComplete always fires once -- with the
+--     result, or flagged `cancelled` -- including for a request cancelled before
+--     it started and for one dropped by `reset`. A caller that suspends until its
+--     answer arrives (PathAgent does) is therefore always resumed. A queued
+--     request's cancellation is delivered on the next resumption cycle
+--     (task.defer), never from inside `cancel` itself: the canceller is often the
+--     very code the answer resumes.
 --
 -- WHAT IT DOES NOT DO. No caching or coalescing of similar requests -- a cache
 -- would have to be invalidated whenever the map changes, and a stale entry sends
@@ -66,6 +73,8 @@ export type RequestSpec = {
 	-- precomputed link graph share this queue with PathfindingService.
 	compute: () -> any,
 	priority: number?, -- higher runs sooner (default 0)
+	-- Called exactly once: with the result, or flagged `cancelled` (also when the
+	-- request was cancelled, or dropped by `reset`, before it ever started).
 	onComplete: (result: Result) -> (),
 }
 
@@ -88,6 +97,8 @@ type Entry = {
 	priority: number,
 	enqueuedAt: number,
 	cancelled: boolean,
+	started: boolean, -- taken off the queue to compute
+	delivered: boolean, -- onComplete has been called (it never is twice)
 }
 
 local queue: { Entry } = {}
@@ -147,11 +158,29 @@ local function bestIndex(now: number): number
 	return best
 end
 
-local function deliver(spec: RequestSpec, result: Result)
-	local ok, err = pcall(spec.onComplete, result)
+local function deliver(entry: Entry, result: Result)
+	if entry.delivered then
+		return
+	end
+	entry.delivered = true
+	local ok, err = pcall(entry.spec.onComplete, result)
 	if not ok then
 		warn(`[Pathfinding] a path request callback errored:\n{err}`)
 	end
+end
+
+-- The answer to a request that never ran. Deferred rather than delivered here: whoever
+-- cancels is often the code the answer resumes (an agent re-goaling cancels the
+-- request its own loop is suspended on), and resuming that synchronously would run
+-- the caller's continuation inside the canceller's frame.
+local function deliverCancelled(entry: Entry)
+	task.defer(deliver, entry, {
+		ok = false,
+		cancelled = true,
+		value = nil,
+		err = nil,
+		waited = os.clock() - entry.enqueuedAt,
+	} :: Result)
 end
 
 local pump: () -> ()
@@ -181,7 +210,7 @@ local function run(entry: Entry)
 		discarded += 1
 	end
 
-	deliver(spec, {
+	deliver(entry, {
 		ok = ran and not entry.cancelled,
 		cancelled = entry.cancelled,
 		value = if ran then value else nil,
@@ -197,19 +226,18 @@ end
 function pump()
 	while active < maxConcurrent and #queue > 0 do
 		local now = os.clock()
+		-- (a cancelled entry is never here: cancel takes it off the queue)
 		local entry = table.remove(queue, bestIndex(now)) :: Entry
-		if entry.cancelled then
-			discarded += 1
-			continue -- cancelled before it ever started: the cheapest outcome
-		end
+		entry.started = true
 		active += 1
 		task.spawn(run, entry)
 	end
 end
 
 -- Queue a computation. Returns a handle whose `cancel` is safe at any time and
--- idempotent: before the computation starts it prevents it entirely, after it
--- starts the result arrives flagged `cancelled`.
+-- idempotent: before the computation starts it prevents it entirely (and the
+-- caller still hears back, flagged `cancelled`, on the next resumption cycle);
+-- after it starts the result arrives flagged `cancelled`.
 function Paths.request(spec: RequestSpec): Handle
 	assert(type(spec) == "table", "Pathfinding.Paths.request: a request table is required")
 	assert(type(spec.compute) == "function", "Pathfinding.Paths.request: spec.compute is required")
@@ -220,31 +248,54 @@ function Paths.request(spec: RequestSpec): Handle
 		priority = spec.priority or 0,
 		enqueuedAt = os.clock(),
 		cancelled = false,
+		started = false,
+		delivered = false,
 	}
 	table.insert(queue, entry)
 
 	local handle = {}
 	function handle.cancel(_)
+		if entry.cancelled then
+			return
+		end
 		entry.cancelled = true
+		if entry.started then
+			return -- computing: its result arrives flagged `cancelled`
+		end
+		--[[
+			Queued: it will never run, so its caller must still hear back. This used to leave
+			the entry on the queue for `pump` to discard without a word -- and a PathAgent
+			suspended on that request was never resumed, so an agent whose goal moved while
+			the broker was saturated froze for good, still reporting Computing or Moving.
+		]]
+		local index = table.find(queue, entry)
+		if index then
+			table.remove(queue, index)
+		end
+		discarded += 1
+		deliverCancelled(entry)
 	end
 
 	pump()
 	return (handle :: any) :: Handle
 end
 
--- Drop every queued request and reset the counters. In-flight computations
--- cannot be stopped mid-yield, so they are marked cancelled and their results
--- discarded on arrival. For round transitions and tests.
+-- Drop every queued request and reset the counters. Each dropped request still
+-- hears back once, flagged `cancelled` (deferred, as for `cancel`). In-flight
+-- computations cannot be stopped mid-yield; they keep their slot and deliver
+-- their own result when they finish. For round transitions and tests.
 function Paths.reset()
-	for _, entry in queue do
-		entry.cancelled = true
-	end
+	local dropped = table.clone(queue)
 	table.clear(queue)
 	completed = 0
 	discarded = 0
 	failed = 0
 	lastWait = 0
 	maxWait = 0
+	for _, entry in dropped do
+		entry.cancelled = true
+		deliverCancelled(entry)
+	end
 end
 
 return Paths
