@@ -131,9 +131,9 @@ Heatmap.setMeta(player, "funnelPath", "skip")
 Heatmap.setMeta(player, "mapName", "Skybridge")
 ```
 
-## Changes from CastleWars original
+## From game system to package
 
-Source: `d:\Work\Roblox\CastleWars\src\ServerStorage\Libraries\Analytics\LobbyHeatmap.lua`
+Started as `src/ServerStorage/Libraries/Analytics/LobbyHeatmap.lua` in CastleWars.
 
 - **Renamed** the public identity from `LobbyHeatmap` to `Heatmap` (module table,
   header title, and the `[LobbyHeatmap]` log prefixes → `[Heatmap]`). The

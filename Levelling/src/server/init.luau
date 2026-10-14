@@ -19,7 +19,7 @@
 -- MULTIPLIERS ARE A NAMED STACK, applied here and nowhere else. A caller hands over a BASE
 -- amount and never has to know the player owns a 2x gamepass, has rebirthed three times, or
 -- caught a double-XP weekend -- an XP source added tomorrow is scaled by having been written
--- at all. The game this was extracted from hardcoded exactly one multiplier (rebirth) inside
+-- at all. The in-game version this started as hardcoded exactly one multiplier (rebirth) inside
 -- this function, which works right up until the second one exists.
 --
 -- THE PROFILE IS THE HOST'S. This module never picks a datastore, a schema or a key: `read`

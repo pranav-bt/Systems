@@ -74,7 +74,7 @@ end)
 
 ## Multipliers are a named stack
 
-The one real departure from the system this was extracted from, which hardcoded exactly one
+The one real departure from the in-game system this started as, which hardcoded exactly one
 multiplier (rebirth) inside the grant function. That works right up until the second one
 exists.
 
@@ -269,9 +269,9 @@ realms, 176 checks, every one of 36 mutants killed.
 
 ---
 
-## Extracted from
+## From game system to package
 
-A permanent level with an XP-per-second run timer and paid training zones. What did **not**
-come along: the combat stat allow-list (`bulletDamage`, `shootRate`, `pierceCount`) that the
+Started as an in-game levelling system: a permanent level with an XP-per-second run timer and
+paid training zones. What did **not** come along: the combat stat allow-list (`bulletDamage`, `shootRate`, `pierceCount`) that the
 level multiplier was applied to, the per-second run rate, and the game's own mirror system. The
 hardcoded rebirth multiplier inside the grant function became the named stack above.

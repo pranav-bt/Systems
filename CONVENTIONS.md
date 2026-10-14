@@ -7,11 +7,11 @@ nothing outside its own folder except declared Wally packages.
 
 Two lineages live here:
 
-- **Extracted from CastleWars** (Zone, Nametags, Heatmap, TimeSync, LagCompensation,
-  Placement) — game-specific coupling replaced with injected config /
-  callbacks or self-provisioning; extracted read-only, source game unmodified. The extraction
+- **Rebuilt from CastleWars game systems** (Zone, Nametags, Heatmap, TimeSync, LagCompensation,
+  Placement) — turned into standalone packages by replacing game-specific coupling with injected
+  config / callbacks or self-provisioning, without modifying the game itself. The packaging
   conventions below apply to these.
-- **The AI suite, built new** (Bots, Pathfinding, Perception, TacticalQuery, HTN) — five
+- **The AI suite, designed as packages from scratch** (Bots, Pathfinding, Perception, TacticalQuery, HTN) — five
   zero-dependency packages composing by shape contracts, not requires. Decision cores are pure
   (no Roblox APIs) and Lune-tested; these ARE formatted with stylua and linted with selene.
   To learn them, read in that order (Bots is the hub); every package follows the same reading
@@ -19,7 +19,7 @@ Two lineages live here:
   whose header comment is the spec** — and each README's "Reading the source" note names that
   core module.
 
-## Extraction conventions (CastleWars packages)
+## Packaging conventions (CastleWars packages)
 
 - **Injection over globals** — anything a library used to reach for (schedulers, loggers, latency,
   place IDs, voxel grids, catalogs) is now a config field with a sensible default, so each library
@@ -27,9 +27,9 @@ Two lineages live here:
 - **Own your transport** — networked libraries create/accept their own RemoteEvents instead of
   assuming a central registry exists at boot.
 - **Behavior preserved** — only the specified coupling points were changed; core logic (especially
-  the lag-comp geometry) is byte-for-byte identical to the original. `--!strict`/`--!native`
+  the lag-comp geometry) is byte-for-byte identical to the in-game version. `--!strict`/`--!native`
   pragmas were preserved where present.
-- Formatting was intentionally **not** run through stylua/rojo (the game owner handles that).
+- Formatting was intentionally **not** run through stylua/rojo (the game's own toolchain handles that).
 
 ## Libraries
 
@@ -41,7 +41,7 @@ Two lineages live here:
 | **Trading** | server + client + shared | none | Player-to-player trading: the invite/offer/ready/countdown session, with what may be swapped and the swap itself injected. Any offer change clears both agreements; lines are totalled by key so duplicates cannot slip past a per-line check; the swap is one atomic call that must re-validate. |
 | **Levelling** | server + client + shared | none | A permanent player level earned through ONE door. Every XP source hands over a BASE amount; a named multiplier stack (gamepass x rebirth x event, composed by product) is applied here and nowhere else, to the amount and to the per-second tempo alike. Profile storage injected, level/experience published as Player attributes, and a client half that coalesces the two writes into one honest change. No stat table -- what a level is worth is a number the host reads. |
 | **LevellingRebirth** | server + client + shared | none | Opt-in addon over Levelling: trade the level you have for a permanently faster one. The ladder is one table and validated on install; the request carries NOTHING, so a forged call is indistinguishable from a real one; the host's own state refuses through a gate. Composes with the base by shape, and pays in an XP multiplier plus an opaque rewards payload. |
-| **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it was extracted from disagreed about. Ships no copy. |
+| **CommunityReward** | server + client | none | Verify a player is in a Roblox group, then pay them once, ever. Live `GroupService` membership rather than the cached `IsInGroup`, a one-time profile flag written before the grant, and the reward itself injected -- the only thing the two games it started in disagreed about. Ships no copy. |
 | **Zone** | server | none | Subject-in-volume detection (rotated box / cylinder / sphere), enter/exit events. Watches named populations -- players by default, or bots/vehicles/anything with a position resolver -- with sets maintained by signal rather than polled. One shared Heartbeat for every zone, cached bounds with a broad-phase reject, and a cached HumanoidRootPart per player. |
 | **Nametags** | server | none | Team-colored overhead BillboardGui nametags; hides own, keeps health bar, recolors on team change. |
 | **Heatmap** | server | none | Anonymized player-movement voxel heatmap, RLE-compressed to a DataStore. Flushes on a timer as well as at shutdown, keeps the batch queued when a write fails instead of discarding it, and rotates its key so a value cannot grow past the 4MB limit. |
@@ -56,8 +56,8 @@ Two lineages live here:
 | **TacticalQuery** | server | none | EQS-style position queries ("find cover from the threat"): candidate generators + weighted tests (LOS/distance/spacing/reachability) over an injectable world-probe surface, with every probe in a run bounded and an in-world visualizer for the scored field. |
 
 Each library's `README.md` documents its public API and a complete usage example (plus, for the
-extracted packages, the configuration/injection points and the exact changes made during
-extraction).
+packages that started in a game, the configuration/injection points and exactly what changed on
+the way to a package).
 
 ### Parked
 

@@ -127,10 +127,10 @@ LagCompensation.start({
 })
 ```
 
-## Changes from the CastleWars original
+## From game system to package
 
-Extracted from `src/server/Systems/TimeSync/init.luau` and
-`src/client/Systems/TimeSync/init.luau`. The rolling-average logic, constants,
+Started as `src/server/Systems/TimeSync/init.luau` and
+`src/client/Systems/TimeSync/init.luau` in CastleWars. The rolling-average logic, constants,
 and RTT computation are unchanged. Differences:
 
 1. **Owns its transport.** The original read

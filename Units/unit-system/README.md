@@ -6,7 +6,7 @@ code against a single `Unit` type, and bots flow through all of it for free — 
 don't error, and they don't get silently skipped.
 
 > Formerly called the "Actor" system. `Actor` → `Unit` throughout (the term "actor" is
-> overloaded in Roblox with `Actor` instances / parallel Luau, so this fork uses
+> overloaded in Roblox with `Actor` instances / parallel Luau, so this version uses
 > **Unit**).
 
 ---

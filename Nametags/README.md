@@ -85,9 +85,9 @@ Note: because colours are only re-evaluated on `Team` change and on respawn, a
 resolver whose result changes for other reasons won't push a live update on its own.
 Trigger a respawn (or, if you expose one, add a manual refresh) to re-apply.
 
-## Changes from CastleWars original
+## From game system to package
 
-Source: `src/server/Systems/Nametags/init.luau` in CastleWars. Logic and behaviour
+Started as `src/server/Systems/Nametags/init.luau` in CastleWars. Logic and behaviour
 are preserved; the only changes are the decoupling points below.
 
 1. **Style constants are now configurable.** `Font`, `Size` (BillboardGui size /

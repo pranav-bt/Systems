@@ -1,16 +1,18 @@
 # Systems
 
-**Gameplay and AI libraries for Roblox, written in Luau.**
+**Gameplay and AI systems for Roblox that I design, build and test. Written in Luau.**
 
-Twenty standalone packages covering NPC AI, server-authoritative combat, latency measurement,
-progression, trading, pets and spatial queries. Each one drops into a game on its own, takes
-its game-specific pieces through configuration instead of reaching for globals, and keeps its
-logic testable outside Studio. The repo carries **1,485 headless checks** that run under
-[Lune](https://lune-org.github.io/docs) with no Studio, no Rojo and no place file.
+Twenty standalone packages: a complete NPC AI suite, server-authoritative hit validation,
+cheat-resistant latency measurement, progression, trading, pets and spatial queries. Each one
+drops into a game on its own, takes its game-specific pieces through configuration instead of
+reaching for globals, and keeps its logic testable outside Studio. I back them with **1,485
+headless checks** that run under [Lune](https://lune-org.github.io/docs) with no Studio, no
+Rojo and no place file.
 
-Some packages were extracted from shipped games and made generic. Others were built new and are
-vendored by games in development. This repo is upstream of those games: fixes land here first,
-and each game pulls a snapshot.
+These systems are built for real games, not demos. Some began inside shipped games. I then
+redesigned them into standalone packages, fixing exploits and closing gaps along the way.
+Others, including the whole AI suite, I designed as packages from day one. The games I'm
+building now run on them.
 
 ![Luau](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Roblox](https://img.shields.io/badge/platform-Roblox-000000)
@@ -30,8 +32,8 @@ and each game pulls a snapshot.
 
 ### An AI suite that composes by contract
 
-**Bots · Pathfinding · Perception · TacticalQuery · HTN.** These are five packages with zero
-dependencies on each other. They fit together because each one accepts the shape the others
+**Bots · Pathfinding · Perception · TacticalQuery · HTN.** I built these five packages from
+scratch, with zero dependencies on each other. They fit together because each one accepts the shape the others
 produce, so no package imports another. Decision cores are pure Luau with no Roblox APIs, so
 they run headless.
 
@@ -62,9 +64,9 @@ flowchart LR
 - **HTN** is a SHOP-style planner with backtracking, a decomposition trace, a bounded search
   and replanning that doesn't penalise a plan for adapting.
 
-**Feasibility study:** three shipped games had their own bot systems: BuildAndBattle, CastleWars
-and MechBattlegrounds. All three behaviour sets were rebuilt as policy modules on this suite
-with **zero library changes**, and 58 headless scenario checks verify them. See
+**Proving the design:** to test whether the suite could carry real games, I rebuilt the bot AI
+of three shipped titles (BuildAndBattle, CastleWars and MechBattlegrounds) on top of it. All
+three worked with **zero library changes**, and 58 headless scenario checks verify them. See
 [Tests/REPORT.md](Tests/REPORT.md).
 
 ### Server-authoritative hit validation
@@ -87,7 +89,9 @@ both the client claimed and the server verified.
 
 - **Trading:** any change to an offer clears both players' agreement. Lines are totalled by
   item, so a duplicate can't slip past a per-line check. The swap is one atomic call that
-  re-validates before it moves anything.
+  re-validates before it moves anything. I also closed a hole in the in-game version this
+  started as: an offer padded with hidden keys got past a 2-line cap and had 51 lines
+  processed. A regression test now covers it.
 - **Levelling:** every XP source goes through one function. Multipliers (gamepass × rebirth ×
   event) are applied there and nowhere else, to both the XP amount and the XP-per-second rate.
 - **LevellingRebirth:** a rebirth request carries no data, so a forged call looks exactly like
@@ -182,16 +186,17 @@ Roblox shim provides `Vector3`, `CFrame`, `Instance`, services, `task` and a **m
 `Heartbeat`**, so tests control time exactly and assert interval, drift and phase behaviour
 rather than sampling it.
 
-- **The shim was checked with mutation testing.** That turned up three places where it
-  disagreed with the engine in ways that let assertions pass whatever the library did. All
-  three are fixed and written up in [Tests/README.md](Tests/README.md).
+- **I mutation-tested the shim itself.** That turned up three places where it disagreed with
+  the engine in ways that let assertions pass whatever the library did. All three are fixed
+  and written up in [Tests/README.md](Tests/README.md).
 - **Failure paths can be triggered on demand.** `failDataStore(n)` makes the next *n* writes
   throw the way the real service does. That is how "Heatmap probably loses data on a throttle"
   became a test, and then a fix.
 - **The loader resolves the requires between a package's own modules and runs them in
   dependency order**, so multi-file packages load as shipped. Tests used to run against
-  vendored copies. A mutation test showed a reverted bug fix surviving in a copy while every
-  suite stayed green, and the copies were removed.
+  duplicated copies of the source, until a mutation test showed a reverted bug fix surviving in
+  a copy while every suite stayed green. I rewrote the loader to run the real files and deleted
+  the copies.
 
 ```sh
 # one suite
@@ -231,7 +236,7 @@ Tests/
   tests/           one Lune suite per library concern, the harness and the Roblox shim
   src/             scenario policies: three shipped games' bots rebuilt on the AI suite
   REPORT.md        the feasibility study
-CONVENTIONS.md     extraction rules and per-library maintainer notes
+CONVENTIONS.md     design conventions and per-library maintainer notes
 ```
 
 **Reading the AI suite:** start with Bots, the package the others plug into, then go through the
@@ -248,4 +253,4 @@ your game through its config. Placement is the one package with a Wally dependen
 
 ---
 
-Built by [Pranav](https://github.com/pranav-bt).
+Designed, built and tested by [Pranav](https://github.com/pranav-bt).

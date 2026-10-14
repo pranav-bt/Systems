@@ -204,7 +204,7 @@ attack volume against the recorded poses. A target is damaged only if it appears
 it was in the volume at that time. Claims the server can't confirm are dropped and
 counted by reason; nothing damaging is ever trusted from the client outright.
 
-## Changes from the CastleWars original
+## From game system to package
 
 Geometry, temporal logic, ring-buffer, interpolation, movement-sanity math, and
 reject bookkeeping are preserved **byte-for-byte**. Only the coupling points

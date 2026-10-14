@@ -3,7 +3,7 @@
 -- CommunityReward: verify that a player belongs to a Roblox group, then pay them
 -- once, ever.
 --
--- Extracted from CA, which ported it from RottenTomato. The two games differ only
+-- Started in CA, which ported it from RottenTomato. The two games differ only
 -- in what the reward IS -- one pays gold, the other hands over a companion -- so
 -- that is the seam this package is built around, and everything else here is the
 -- part that was identical in both.

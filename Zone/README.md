@@ -139,7 +139,7 @@ non-uniform size behaves sensibly instead of silently ignoring an axis.
 - **`IntervalCallbackDurationOverride`** — minimum seconds between successive `intervalCallback` invocations for a player. Defaults to `ZoneUpdateInterval`.
 - **`ZoneUpdateInterval`** also determines phase. A zone sweeps immediately on the frame it is
   created, and is then delayed once by a random fraction of one interval — see Phase spreading.
-- **`collisionGroup`** *(injection point — added during extraction)* — if provided, the part's `CollisionGroup` is set to this string. If omitted/`nil`, the part's `CollisionGroup` is **left untouched** (stays `"Default"`). The collision group is **not** created for you; register it via `PhysicsService` beforehand if you pass one.
+- **`collisionGroup`** *(injection point — added when it became a package)* — if provided, the part's `CollisionGroup` is set to this string. If omitted/`nil`, the part's `CollisionGroup` is **left untouched** (stays `"Default"`). The collision group is **not** created for you; register it via `PhysicsService` beforehand if you pass one.
 - **`types`** — which populations this zone watches. Defaults to `{ "player" }`. Pass `Zone.AllTypes` for every type registered at sweep time. Resolved *per sweep*, so a type registered after the zone still counts and require order stops mattering.
 - **`excludeTypes`** — names removed from whatever `types` resolves to. Applies to an explicit list as well as to `Zone.AllTypes`, so `{ types = Zone.AllTypes, excludeTypes = { "player" } }` means "everything but players".
 - **`tagsToTrack`** — each tag becomes a population of the same name (wired via `Zone.trackTagged`) and is appended to what this zone watches. This was accepted and silently ignored in every previous version.
@@ -557,11 +557,11 @@ Where it would start to matter is check *frequency* rather than population: tens
 subjects at ten checks per second would run into milliseconds per frame, and that is the point
 at which the deferred path earns its keep.
 
-## Changes from CastleWars original
+## From game system to package
 
-Original source: `src/server/Systems/Zone.lua` in the CastleWars game.
+Started as `src/server/Systems/Zone.lua` in CastleWars.
 
-**Extraction (no behaviour change):**
+**Decoupling (no behaviour change):**
 
 1. **Collision group is now configurable.** The original hardcoded
    `zoneInstance.CollisionGroup = "SuggestionBlock"`, which assumed a game-specific
@@ -642,4 +642,4 @@ Original source: `src/server/Systems/Zone.lua` in the CastleWars game.
     MeshPart"*, an error about a property the caller never mentioned.
 
 There were no `--!strict`/`--!native` pragmas in the original, so none were added, and the
-file is deliberately not `stylua`-formatted (per this repo's extraction conventions).
+file is deliberately not `stylua`-formatted (per this repo's packaging conventions).

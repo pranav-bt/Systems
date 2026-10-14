@@ -323,9 +323,9 @@ mirrored number could only describe one of them.
 `CompanionsUpgrades` (pay a cost) — both policies over the same `moveCopies` primitive, so the two
 can be installed together without fighting over who writes the level.
 
-## Extraction notes
+## From game system to package
 
-Extracted from the CA game, whose `PetService` was already written as a drop-in package — its own
+Started as the CA game's `PetService`, which was already written as a drop-in package — its own
 header declared the contract and every require in it was relative. The core moved almost as-is;
 what changed was everything around it.
 

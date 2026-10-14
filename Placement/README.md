@@ -210,7 +210,7 @@ Placement.init({
 })
 ```
 
-## Changes from CastleWars original
+## From game system to package
 
 - **Removed dormancy guards.** Both `init` files began with `if true then return {} end`;
   removed so the system runs.

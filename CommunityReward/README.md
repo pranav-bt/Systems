@@ -123,9 +123,9 @@ bookkeeping for a case that only happens while somebody is editing the place.
 
 Omit `promptTag` to skip prompt handling entirely and open your window from your own UI.
 
-## Extraction notes
+## From game system to package
 
-Extracted from the CA game, which had ported it from RottenTomato. **The two games differed only
+Started in the CA game, which had ported it from RottenTomato. **The two games differed only
 in what the reward was** — one paid gold, the other handed over a companion — so that became the
 `grant` seam, and everything else here is what was identical in both.
 
